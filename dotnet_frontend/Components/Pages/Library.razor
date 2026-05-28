@@ -1,0 +1,209 @@
+@page "/library"
+@rendermode InteractiveServer
+@using System.Text
+@inject AnalysisRepository Repo
+@inject AnalysisStore Store
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Library</PageTitle>
+
+<header class="page-header">
+    <span class="section-eyebrow">History</span>
+    <h1 class="page-header__title">Saved Analysis Runs</h1>
+    <p class="page-header__meta">
+        Every analysis run is persisted automatically — open any past run to view its themes,
+        re-export the report, or resume the follow-up chat.
+    </p>
+</header>
+
+<section class="surface-card mb-3">
+    <div class="library-filters">
+        <div class="library-filters__field">
+            <label class="form-label small mb-1">Document ID contains</label>
+            <input class="form-control form-control-sm" @bind="_docFilter" @bind:event="oninput" placeholder="e.g. ED-2025-OCR" />
+        </div>
+        <div class="library-filters__field library-filters__field--check">
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="successOnly" @bind="_successOnly" />
+                <label class="form-check-label" for="successOnly">Successful only</label>
+            </div>
+        </div>
+        <div class="library-filters__field library-filters__field--actions">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="Refresh" disabled="@_loading">Refresh</button>
+        </div>
+    </div>
+</section>
+
+@if (_loading)
+{
+    <div class="alert alert-light border">Loading…</div>
+}
+else if (_error is not null)
+{
+    <div class="alert alert-danger"><strong>Couldn't load runs.</strong> @_error</div>
+}
+else if (Filtered.Count == 0)
+{
+    <div class="alert alert-light border">
+        <strong>No runs yet.</strong> Run an analysis on the
+        <a href="analysis">AI Analysis page</a> and it will appear here.
+    </div>
+}
+else
+{
+    <section class="surface-card library-table-card">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover align-middle mb-0 library-table">
+                <thead>
+                    <tr>
+                        <th>Started</th>
+                        <th>Document</th>
+                        <th class="text-end">Comments</th>
+                        <th class="text-end">Themes</th>
+                        <th>Status</th>
+                        <th>Sentiment</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in Filtered)
+                    {
+                        <tr class="library-row" @onclick="() => OpenRun(r.Id)" style="cursor:pointer">
+                            <td class="text-nowrap">
+                                <div>@r.StartedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</div>
+                                @if (r.CompletedAt is { } done)
+                                {
+                                    var elapsed = done - r.StartedAt;
+                                    <div class="small text-muted">@FormatElapsed(elapsed)</div>
+                                }
+                            </td>
+                            <td><code>@r.DocumentId</code></td>
+                            <td class="text-end">@r.TotalComments</td>
+                            <td class="text-end">@r.ThemeCount</td>
+                            <td>
+                                @if (r.Succeeded)
+                                {
+                                    <span class="badge bg-success">Succeeded</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-danger" title="@r.ErrorMessage">Failed</span>
+                                }
+                            </td>
+                            <td><span class="small text-muted">@(string.IsNullOrWhiteSpace(r.OverallSentiment) ? "—" : r.OverallSentiment)</span></td>
+                            <td class="text-end text-nowrap" @onclick:stopPropagation>
+                                <button class="btn btn-sm btn-primary me-1"
+                                        @onclick="() => OpenRun(r.Id)"
+                                        disabled="@(_busyId == r.Id)">
+                                    Open
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger"
+                                        @onclick="() => DeleteRun(r.Id)"
+                                        disabled="@(_busyId == r.Id)"
+                                        title="Delete this run">
+                                    Delete
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    private List<AnalysisRepository.RunSummary> _runs = new();
+    private bool _loading = true;
+    private string? _error;
+    private string _docFilter = string.Empty;
+    private bool _successOnly;
+    private Guid? _busyId;
+
+    private List<AnalysisRepository.RunSummary> Filtered =>
+        _runs
+            .Where(r => string.IsNullOrWhiteSpace(_docFilter)
+                        || r.DocumentId.Contains(_docFilter, StringComparison.OrdinalIgnoreCase))
+            .Where(r => !_successOnly || r.Succeeded)
+            .ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Refresh();
+    }
+
+    private async Task Refresh()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            // Pull a generous slice; filtering happens client-side so toggles stay snappy.
+            var list = await Repo.ListAsync(new AnalysisRepository.ListFilter(Take: 200));
+            _runs = list.ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task OpenRun(Guid id)
+    {
+        _busyId = id;
+        try
+        {
+            var run = await Repo.LoadRunAsync(id);
+            if (run is null) return;
+
+            Store.DocumentId = run.DocumentId;
+            Store.LastRun = run;
+            Store.LoadedRunId = id;
+            // Loaded runs don't have the original CommentResource list available, so
+            // clear staged inputs to avoid the Analysis page thinking a re-run is queued.
+            Store.Comments = Array.Empty<CommentResource>();
+            Store.ClearSelection();
+            Navigation.NavigateTo("/analysis");
+        }
+        finally
+        {
+            _busyId = null;
+        }
+    }
+
+    private async Task DeleteRun(Guid id)
+    {
+        var confirmed = await JS.InvokeAsync<bool>("confirm", "Delete this saved analysis run? This cannot be undone.");
+        if (!confirmed) return;
+
+        _busyId = id;
+        try
+        {
+            await Repo.DeleteRunAsync(id);
+            _runs.RemoveAll(r => r.Id == id);
+            // If the deleted run is the one currently loaded, clear the in-memory pointer
+            // so the Analysis page doesn't try to persist new chat turns against a dead row.
+            if (Store.LoadedRunId == id) Store.LoadedRunId = null;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busyId = null;
+        }
+    }
+
+    private static string FormatElapsed(TimeSpan t) =>
+        t.TotalSeconds < 60
+            ? $"{(int)t.TotalSeconds}s"
+            : t.TotalMinutes < 60
+                ? $"{(int)t.TotalMinutes}m {(int)(t.TotalSeconds % 60)}s"
+                : $"{(int)t.TotalHours}h {(int)(t.TotalMinutes % 60)}m";
+}

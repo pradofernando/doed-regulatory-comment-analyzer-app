@@ -1,0 +1,210 @@
+﻿@page "/"
+
+<PageTitle>DoED Regulatory Comments</PageTitle>
+
+<section class="hero">
+    <span class="section-eyebrow">U.S. Department of Education</span>
+    <h1 class="hero__title">DoED <span class="hero__title--accent">Regulatory Comments</span></h1>
+    <p class="hero__subtitle">
+        Read what the public is telling the Department of Education about proposed rules — without
+        digging through thousands of submissions on
+        <a href="https://www.regulations.gov/" target="_blank" rel="noreferrer">Regulations.gov</a>.
+        Pull in the comments, let AI group them into themes, and ask follow-up questions in plain English.
+    </p>
+    <div class="hero__actions">
+        <a class="btn btn-primary" href="comments">Start with comments</a>
+        <a class="btn btn-outline-primary" href="settings">Open Settings</a>
+    </div>
+</section>
+
+<section class="cards-row">
+    <a class="feature-card feature-card--link" href="comments" aria-label="Open the Comments page">
+        <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 5h14v10a2 2 0 0 1-2 2H9l-4 3V5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 10h8M8 13h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </div>
+        <h3>1. Pull in the comments</h3>
+        <p>
+            Type a document ID (for example <code>ED-2025-SCC-0481-0001</code>) and we'll fetch every public
+            comment for that rule. You'll see who wrote it, when, and on behalf of what organization.
+        </p>
+        <span class="feature-card__cta">Go to Comments &rarr;</span>
+    </a>
+
+    <a class="feature-card feature-card--link" href="analysis" aria-label="Open the AI Analysis page">
+        <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 19V5m6 14V9m6 10v-6m6 6V3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </div>
+        <h3>2. Let AI summarize them</h3>
+        <p>
+            One click groups the comments into themes (support, concerns, suggestions), shows what people
+            most agree and disagree on, and lets you ask follow-up questions in plain English.
+        </p>
+        <span class="feature-card__cta">Go to AI Analysis &rarr;</span>
+    </a>
+
+    <a class="feature-card feature-card--link" href="library" aria-label="Open the Library page">
+        <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16 6l4 14-3.5 1L13 7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        </div>
+        <h3>3. Come back to past runs</h3>
+        <p>
+            Every analysis you complete is saved automatically. The Library keeps a tidy list so you can
+            reopen the summary, the themes, and the chat exactly as you left them — no need to re-run.
+        </p>
+        <span class="feature-card__cta">Go to Library &rarr;</span>
+    </a>
+
+    <a class="feature-card feature-card--link" href="settings" aria-label="Open the Settings page">
+        <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M19.4 14a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V20a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H4a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H10a1.7 1.7 0 0 0 1-1.5V4a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V10a1.7 1.7 0 0 0 1.5 1H20a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+        </div>
+        <h3>Set things up first</h3>
+        <p>
+            One-time setup lives on the Settings page: your Regulations.gov API key, the Microsoft Foundry
+            project that powers the AI, and how many comments to send per AI request. You only need to do
+            this once.
+        </p>
+        <span class="feature-card__cta">Go to Settings &rarr;</span>
+    </a>
+</section>
+
+<style>
+    .hero {
+        position: relative;
+        padding: 2.75rem 2rem 2.25rem;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #0b1220 0%, #1d2c52 55%, #0d9488 130%);
+        color: #e2e8f0;
+        margin-bottom: 1.75rem;
+        overflow: hidden;
+    }
+
+    .hero::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(900px 200px at 80% -20%, rgba(125, 211, 252, 0.18), transparent 60%);
+        pointer-events: none;
+    }
+
+    .hero .section-eyebrow { color: #7dd3fc; }
+
+    .hero__title {
+        font-size: clamp(2rem, 4vw, 2.75rem);
+        font-weight: 800;
+        margin: 0.75rem 0 0.75rem;
+        line-height: 1.1;
+        color: #ffffff;
+        letter-spacing: -0.02em;
+    }
+
+    .hero__title--accent {
+        background: linear-gradient(90deg, #93c5fd, #5eead4);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }
+
+    .hero__subtitle {
+        max-width: 760px;
+        font-size: 1.025rem;
+        color: #cbd5e1;
+        line-height: 1.55;
+        margin-bottom: 1.5rem;
+    }
+
+    .hero__subtitle a { color: #7dd3fc; }
+    .hero__subtitle code {
+        background: rgba(255, 255, 255, 0.1);
+        color: #e0f2fe;
+    }
+
+    .hero__actions {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+    }
+
+    .hero .btn-outline-primary {
+        color: #ffffff;
+        border-color: rgba(255, 255, 255, 0.4);
+        background-color: transparent;
+    }
+
+    .hero .btn-outline-primary:hover {
+        background-color: rgba(255, 255, 255, 0.1);
+        color: #ffffff;
+        border-color: rgba(255, 255, 255, 0.6);
+    }
+
+    .cards-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 1rem;
+    }
+
+    .feature-card {
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: 12px;
+        padding: 1.4rem;
+        box-shadow: var(--shadow-sm);
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        color: var(--color-text);
+    }
+
+    .feature-card--link {
+        text-decoration: none;
+        transition: transform .12s ease, box-shadow .15s ease, border-color .15s ease;
+    }
+
+    .feature-card--link:hover {
+        text-decoration: none;
+        transform: translateY(-2px);
+        border-color: var(--color-primary);
+        box-shadow: var(--shadow-md);
+    }
+
+    .feature-card--link:focus-visible {
+        outline: none;
+        border-color: var(--color-primary);
+        box-shadow: 0 0 0 3px rgba(31, 78, 216, 0.25);
+    }
+
+    .feature-card h3 {
+        font-size: 1.05rem;
+        margin: 0.25rem 0 0.1rem;
+        font-weight: 600;
+        color: var(--color-heading);
+    }
+
+    .feature-card p {
+        color: var(--color-text-muted);
+        font-size: 0.92rem;
+        margin: 0;
+        line-height: 1.5;
+    }
+
+    .feature-card__icon {
+        width: 38px;
+        height: 38px;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--color-primary);
+        background: var(--color-primary-soft);
+    }
+
+    .feature-card__icon svg { width: 20px; height: 20px; }
+
+    .feature-card__cta {
+        margin-top: auto;
+        padding-top: 0.6rem;
+        font-weight: 600;
+        color: var(--color-primary);
+        font-size: 0.92rem;
+    }
+</style>

@@ -1,0 +1,12 @@
+# Uncomment to enable Azure Monitor OpenTelemetry
+# Ref: aka.ms/functions-azure-monitor-python 
+# azure-monitor-opentelemetry 
+
+azure-functions
+semantic-kernel>=1.36.0,<2.0.0
+semantic-kernel[azure]>=1.36.0,<2.0.0
+azure-identity>=1.24.0,<2.0.0
+azure-storage-blob>=12.19.0,<13.0.0
+requests>=2.31.0,<3.0.0
+PyPDF2>=3.0.0,<4.0.0
+python-docx>=1.0.0,<2.0.0

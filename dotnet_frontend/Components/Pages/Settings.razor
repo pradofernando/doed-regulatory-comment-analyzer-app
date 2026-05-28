@@ -1,0 +1,164 @@
+@page "/settings"
+@rendermode InteractiveServer
+@inject ApiSettingsStore SettingsStore
+
+<PageTitle>API Settings</PageTitle>
+
+<header class="page-header">
+    <span class="section-eyebrow">Configuration</span>
+    <h1 class="page-header__title">API Settings</h1>
+    <p class="page-header__meta">
+        Defaults to the public Regulations.gov v4 API and the DoE Demo Foundry project. Override anything below;
+        changes persist to <code>App_Data/api-settings.json</code>.
+    </p>
+</header>
+
+<EditForm Model="_form" OnValidSubmit="OnSaveAsync" FormName="apiSettings">
+    <section class="surface-card">
+        <h2 class="settings-section-title">Comments backend</h2>
+
+        <div class="mb-3">
+            <label class="form-label">API base URL</label>
+            <InputText class="form-control" @bind-Value="_form.BaseUrl" />
+            <div class="form-text">Default: <code>@ApiSettings.DefaultBaseUrl</code></div>
+        </div>
+
+        <div class="mb-3">
+            <label class="form-label">API key (sent as <code>X-Api-Key</code>)</label>
+            <InputText type="password" class="form-control" @bind-Value="_form.ApiKey" />
+            <div class="form-text">Required by Regulations.gov. Custom backends may ignore this header.</div>
+        </div>
+
+        <div class="mb-0">
+            <label class="form-label">Default document / docket ID</label>
+            <InputText class="form-control" @bind-Value="_form.DefaultDocumentId" />
+        </div>
+    </section>
+
+    <section class="surface-card mt-3">
+        <h2 class="settings-section-title">AI agents (Azure AI Foundry)</h2>
+        <p class="form-text mb-3">
+            Used by the <strong>Run AI analysis</strong> button on the Comments page. Authenticates with
+            <code>DefaultAzureCredential</code> — run <code>az login</code> first.
+        </p>
+        <div class="alert alert-info small mb-3" role="note">
+            <strong>Prompt agents (new Foundry experience).</strong> Each agent is identified by
+            <strong>Name</strong> + <strong>Version</strong> — not an <code>asst_…</code> ID.
+            The Name is the exact label you typed when creating the agent (e.g.
+            <code>RegulatoryCommentCategorizationAgent</code>). The Version is the integer shown next to
+            <em>Version:</em> at the top of the agent's Playground page, or use <code>latest</code> to
+            always pick the currently published version. Calls go through the Responses API
+            (<code>POST /openai/v1/responses</code>) with an <code>agent_reference</code> body field.
+        </div>
+
+        <div class="mb-3">
+            <label class="form-label">Foundry project endpoint</label>
+            <InputText class="form-control" @bind-Value="_form.FoundryEndpoint" />
+            <div class="form-text">e.g. <code>https://&lt;resource&gt;.services.ai.azure.com/api/projects/&lt;project&gt;</code></div>
+        </div>
+
+        <div class="row g-3">
+            <div class="col-md-8">
+                <label class="form-label">Categorization agent name</label>
+                <InputText class="form-control" @bind-Value="_form.CategorizationAgentName" placeholder="RegulatoryCommentCategorizationAgent" />
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Version</label>
+                <InputText class="form-control" @bind-Value="_form.CategorizationAgentVersion" placeholder="latest" />
+                <div class="form-text">e.g. <code>3</code> or <code>latest</code></div>
+            </div>
+
+            <div class="col-md-8">
+                <label class="form-label">Grouping agent name</label>
+                <InputText class="form-control" @bind-Value="_form.GroupingAgentName" placeholder="RegulatoryCommentGroupingAgent" />
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Version</label>
+                <InputText class="form-control" @bind-Value="_form.GroupingAgentVersion" placeholder="latest" />
+            </div>
+
+            <div class="col-md-8">
+                <label class="form-label">Follow-up Q&amp;A agent name <span class="text-muted small">(optional)</span></label>
+                <InputText class="form-control" @bind-Value="_form.FollowUpAgentName" placeholder="RegulatoryCommentFollowUpAgent (optional)" />
+                <div class="form-text">Leave blank to disable the chat panel after a run.</div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Version</label>
+                <InputText class="form-control" @bind-Value="_form.FollowUpAgentVersion" placeholder="latest" />
+            </div>
+
+            <div class="col-md-8">
+                <label class="form-label">Model deployment name <span class="text-muted small">(informational)</span></label>
+                <InputText class="form-control" @bind-Value="_form.ModelDeploymentName" />
+                <div class="form-text">
+                    Display-only. The model is determined by the prompt agent itself in the Foundry portal.
+                    Default: <code>@ApiSettings.DefaultModelDeploymentName</code>.
+                </div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Batch size</label>
+                <InputNumber class="form-control" @bind-Value="_form.BatchSize" min="1" max="50" />
+                <div class="form-text">Default: @ApiSettings.DefaultBatchSize</div>
+            </div>
+            <div class="col-12">
+                <div class="alert alert-light border small mb-0" role="note">
+                    <strong>What is batch size?</strong> The AI categorization agent reads comments in groups of this many at a time.
+                    A larger batch is faster (fewer round-trips) but uses more tokens per call and is more likely to hit model context limits or rate limits;
+                    a smaller batch is slower but more reliable for very long comments or attachments.
+                    <strong>Start with @ApiSettings.DefaultBatchSize.</strong> Increase it (e.g. 10–15) if your comments are short and you want faster runs;
+                    drop it to 2–3 if you see token-limit errors or comments with large PDF attachments.
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="d-flex gap-2 mt-3">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn btn-outline-secondary" @onclick="OnResetAsync">Reset to defaults</button>
+    </div>
+</EditForm>
+
+@if (_saved)
+{
+    <div class="alert alert-success mt-3" role="alert">Settings saved.</div>
+}
+
+<style>
+    .page-header { margin-bottom: 1.25rem; }
+    .page-header__title { margin: 0.35rem 0 0.35rem; font-size: 1.85rem; }
+    .page-header__meta { color: var(--color-text-muted); margin: 0; max-width: 70ch; }
+    .settings-section-title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--color-text-muted);
+        margin: 0 0 1rem;
+    }
+</style>
+
+@code {
+    private ApiSettings _form = new();
+    private bool _saved;
+
+    protected override void OnInitialized()
+    {
+        _form = SettingsStore.Current;
+    }
+
+    private Task OnSaveAsync()
+    {
+        SettingsStore.Update(_form);
+        _saved = true;
+        _form = SettingsStore.Current;
+        return Task.CompletedTask;
+    }
+
+    private Task OnResetAsync()
+    {
+        SettingsStore.ResetToDefaults();
+        _form = SettingsStore.Current;
+        _saved = true;
+        return Task.CompletedTask;
+    }
+}

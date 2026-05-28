@@ -1,0 +1,60 @@
+# Local secrets and machine-specific files — never commit
+.env
+.env.local
+*.env
+!.env.example
+
+# Azure Functions local settings
+azure_func/doed_regulatory_comments_func/local.settings.json
+**/local.settings.json
+!**/local.settings.json.example
+
+# .NET frontend: persisted user settings + local SQLite database
+dotnet_frontend/App_Data/
+dotnet_frontend/bin/
+dotnet_frontend/obj/
+dotnet_frontend/appsettings.Local.json
+dotnet_frontend/appsettings.*.local.json
+
+# .NET user-secrets (just in case)
+**/.dotnet/
+**/secrets.json
+
+# Azure Developer CLI environments (per-machine, often contain secrets)
+.azure/
+
+# Python output/cache
+output/
+__pycache__/
+*.py[cod]
+.python_packages/
+.venv/
+.venv_x64/
+venv/
+env/
+
+# Azurite local emulator
+__azurite_db_blob__.json
+__azurite_db_blob_extent__.json
+__azurite_db_queue__.json
+__azurite_db_queue_extent__.json
+__azurite_db_table__.json
+__blobstorage__/
+
+# Project working outputs (analysis pipeline scratch files)
+regulations_comments_*.json
+comments_extracted_*.json
+comments_consolidated_*.csv
+comments_summarized_*.csv
+categorizations_*.json
+grouped_analysis_*.json
+attachments/
+
+# IDE / OS
+azure_func/doed_regulatory_comments_func/.vscode
+.vs/
+.vscode/launch.json
+*.user
+*.suo
+.DS_Store
+Thumbs.db

@@ -1,0 +1,713 @@
+@page "/analysis"
+@rendermode InteractiveServer
+@using System.Text
+@using System.Text.Json
+@inject AnalysisStore Store
+@inject ApiSettingsStore SettingsStore
+@inject FoundryAnalysisService Foundry
+@inject AnalysisRepository Repo
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ILogger<Analysis> Logger
+@implements IDisposable
+
+<PageTitle>AI Analysis</PageTitle>
+
+<header class="page-header">
+    <span class="section-eyebrow">AI insights</span>
+    <h1 class="page-header__title">Regulatory Comment Analysis</h1>
+    <p class="page-header__meta">
+        Runs the same two Foundry agents the daily Azure Function uses — first to categorize every comment,
+        then to group them into themes and synthesize a collective analysis.
+    </p>
+</header>
+
+@if (!Store.HasInput && Store.LastRun is null)
+{
+    <div class="alert alert-light border">
+        <strong>No comments queued.</strong> Fetch some comments on the
+        <a href="comments">Comments page</a> and click <em>Run AI analysis</em>.
+    </div>
+}
+else
+{
+    <section class="surface-card analysis-status">
+        <div class="analysis-status__main">
+            @if (IsLoadedFromLibrary)
+            {
+                <div class="library-load-banner">
+                    <span class="badge bg-info text-dark me-2">Loaded from Library</span>
+                    <span class="small text-muted">
+                        Viewing a saved run. To re-run, <a href="comments">fetch comments</a> for this document first.
+                    </span>
+                </div>
+            }
+            <div class="meta-row">
+                <div><span class="meta-label">Document</span><span class="meta-value"><code>@Store.DocumentId</code></span></div>
+                <div><span class="meta-label">Comments</span><span class="meta-value">@(Store.HasInput ? Store.Comments.Count : (Store.LastRun?.TotalComments ?? 0))</span></div>
+                <div><span class="meta-label">Batch size</span><span class="meta-value">@SettingsStore.Current.BatchSize</span></div>
+                <div><span class="meta-label">Foundry endpoint</span><span class="meta-value endpoint">@SettingsStore.Current.FoundryEndpoint</span></div>
+            </div>
+            @if (Store.SelectedCount > 0)
+            {
+                <p class="selection-hint mt-2 mb-0 text-muted small">
+                    Analyzing <strong>@Store.SelectedCount</strong> manually selected comment(s).
+                </p>
+            }
+        </div>
+        <div class="analysis-status__actions">
+            @if (_isRunning)
+            {
+                <button class="btn btn-outline-danger btn-sm" @onclick="CancelRun">Cancel</button>
+            }
+            else if (IsLoadedFromLibrary)
+            {
+                <a href="comments" class="btn btn-outline-secondary btn-sm">Open Comments page</a>
+            }
+            else
+            {
+                <button class="btn btn-primary" @onclick="StartRun" disabled="@(!Store.HasInput || !SettingsStore.Current.IsFoundryConfigured)">
+                    @(Store.LastRun is null ? "Run analysis" : "Re-run analysis")
+                </button>
+            }
+        </div>
+    </section>
+
+    @if (_isRunning || _progress is not null)
+    {
+        <section class="surface-card progress-card mt-3">
+            <div class="progress-card__header">
+                <span class="badge bg-primary">@(_progress?.Phase ?? "Working")</span>
+                <span class="progress-card__msg">@(_progress?.Message ?? "Starting…")</span>
+            </div>
+            <div class="progress" role="progressbar" aria-valuenow="@((int)(_progress?.Percent ?? 0))" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-bar" style="width:@((int)(_progress?.Percent ?? 0))%">@((int)(_progress?.Percent ?? 0))%</div>
+            </div>
+            @if (_progress is not null && _progress.Total > 0)
+            {
+                <div class="small text-muted mt-1">@(_progress.Current) / @(_progress.Total)</div>
+            }
+        </section>
+    }
+
+    @if (_error is not null)
+    {
+        <div class="alert alert-danger mt-3"><strong>Analysis failed.</strong> @_error</div>
+    }
+}
+
+@{
+    var run = Store.LastRun;
+}
+@if (run is not null && run.Succeeded)
+{
+    var g = run.Grouped;
+    var totalGrouped = g.ThemeGroups.Sum(t => t.Count);
+
+    <div class="d-flex justify-content-between align-items-center mt-4 mb-2 flex-wrap gap-2">
+        <h2 class="section-title">Collective analysis</h2>
+        <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-primary btn-sm" @onclick="DownloadReportJson">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Download JSON
+            </button>
+            <button class="btn btn-outline-primary btn-sm" @onclick="DownloadReportText">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Download report (.txt)
+            </button>
+            <button class="btn btn-outline-primary btn-sm" @onclick="DownloadReportWord">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Download Word
+            </button>
+            <button class="btn btn-outline-primary btn-sm" @onclick="DownloadReportExcel">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Download Excel
+            </button>
+        </div>
+    </div>
+
+    @if (!g.ParsedSuccessfully)
+    {
+        <div class="alert alert-warning mt-2">
+            The grouping agent didn't return valid JSON. Showing raw text below; the JSON download contains everything.
+        </div>
+        <section class="surface-card"><pre class="raw">@g.RawResponse</pre></section>
+    }
+    else
+    {
+        <section class="surface-card summary-card">
+            <div class="summary-stat">
+                <div class="summary-stat__value">@run.TotalComments</div>
+                <div class="summary-stat__label">Comments analyzed</div>
+            </div>
+            <div class="summary-stat">
+                <div class="summary-stat__value">@g.ThemeGroups.Count</div>
+                <div class="summary-stat__label">Theme groups</div>
+            </div>
+            <div class="summary-stat">
+                <div class="summary-stat__value">@(((run.CompletedAt ?? DateTimeOffset.UtcNow) - run.StartedAt).TotalSeconds.ToString("F0"))s</div>
+                <div class="summary-stat__label">Duration</div>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(g.OverallSentiment))
+            {
+                <div class="summary-stat">
+                    <div class="summary-stat__value sentiment">@g.OverallSentiment</div>
+                    <div class="summary-stat__label">Overall sentiment</div>
+                </div>
+            }
+        </section>
+
+        @if (!string.IsNullOrWhiteSpace(g.OverallSummary))
+        {
+            <section class="surface-card mt-3">
+                <div class="section-eyebrow">Overall summary</div>
+                <p class="overall-summary">@g.OverallSummary</p>
+            </section>
+        }
+
+        @if (g.ThemeGroups.Count > 0)
+        {
+            <h3 class="subsection-title">Theme groups</h3>
+            <div class="theme-grid">
+                @{ var rank = 1; }
+                @foreach (var t in g.ThemeGroups.OrderByDescending(x => x.Count))
+                {
+                    <article class="theme-card">
+                        <header class="theme-card__head">
+                            <div>
+                                <span class="theme-rank">#@rank</span>
+                                <h4 class="theme-card__title">@t.GroupName</h4>
+                            </div>
+                            <div class="theme-card__count">
+                                <span>@t.Count</span>
+                                <small>@(t.Count == 1 ? "comment" : "comments")</small>
+                            </div>
+                        </header>
+
+                        @if (!string.IsNullOrWhiteSpace(t.GroupDescription))
+                        {
+                            <p class="theme-card__desc">@t.GroupDescription</p>
+                        }
+
+                        @if (t.StanceDistribution.Count > 0)
+                        {
+                            <div class="stance-bar" role="img" aria-label="Stance distribution">
+                                @foreach (var kv in t.StanceDistribution)
+                                {
+                                    var pct = totalForGroup(t) == 0 ? 0 : (100.0 * kv.Value / totalForGroup(t));
+                                    <span class="stance-bar__seg @StanceClass(kv.Key)" style="width:@(pct.ToString("F1"))%" title="@kv.Key: @kv.Value">
+                                        @if (pct >= 12)
+                                        {
+                                            <span class="stance-bar__lbl">@kv.Key · @kv.Value</span>
+                                        }
+                                    </span>
+                                }
+                            </div>
+                        }
+
+                        @if (t.CommonArguments.Count > 0)
+                        {
+                            <div class="theme-card__args">
+                                <div class="theme-card__args-label">Key arguments</div>
+                                <ul>
+                                    @foreach (var arg in t.CommonArguments.Take(5))
+                                    {
+                                        <li>@arg</li>
+                                    }
+                                </ul>
+                            </div>
+                        }
+
+                        @if (t.SubmissionNumbers.Count > 0)
+                        {
+                            <div class="theme-card__subs">
+                                <span class="meta-label">Submissions</span>
+                                <div class="sub-chips">
+                                    @foreach (var s in t.SubmissionNumbers.Take(14))
+                                    {
+                                        <span class="sub-chip">#@s</span>
+                                    }
+                                    @if (t.SubmissionNumbers.Count > 14)
+                                    {
+                                        <span class="sub-chip sub-chip--more">+@(t.SubmissionNumbers.Count - 14)</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </article>
+                    rank++;
+                }
+            </div>
+        }
+
+        @if (g.Patterns.Count > 0)
+        {
+            <h3 class="subsection-title">Key patterns</h3>
+            <section class="surface-card">
+                <ol class="m-0">
+                    @foreach (var p in g.Patterns)
+                    {
+                        <li class="pattern-item">@p</li>
+                    }
+                </ol>
+            </section>
+        }
+
+        @if (g.Recommendations.Count > 0)
+        {
+            <h3 class="subsection-title">Recommendations</h3>
+            <section class="surface-card">
+                <ol class="m-0">
+                    @foreach (var r in g.Recommendations)
+                    {
+                        <li class="pattern-item">@r</li>
+                    }
+                </ol>
+            </section>
+        }
+    }
+
+    <h3 class="subsection-title">Follow-up Q&amp;A</h3>
+    @if (string.IsNullOrWhiteSpace(SettingsStore.Current.FollowUpAgentName))
+    {
+        <section class="surface-card text-muted small">
+            Add a <strong>Follow-up Q&amp;A agent name</strong> on the <a href="settings">Settings</a> page to enable chat about this analysis.
+        </section>
+    }
+    else
+    {
+        <section class="surface-card chat-panel">
+            @if (string.IsNullOrWhiteSpace(run.FollowUpThreadId))
+            {
+                <p class="mb-2">Start a chat to ask follow-up questions about this analysis. The agent gets the full collective analysis + per-comment categorizations as context.</p>
+                <button class="btn btn-primary" @onclick="StartChat" disabled="@_chatStarting">
+                    @if (_chatStarting) { <span class="spinner-border spinner-border-sm me-2"></span> }
+                    Start chat
+                </button>
+                @if (_chatError is not null) { <div class="alert alert-danger mt-2 mb-0 small">@_chatError</div> }
+            }
+            else
+            {
+                <div class="chat-history mb-3">
+                    @foreach (var turn in run.FollowUpHistory)
+                    {
+                        <div class="chat-turn chat-turn--@turn.Role">
+                            <div class="chat-turn__role">@(turn.Role == "user" ? "You" : "Agent") <span class="chat-turn__time">@turn.At.ToLocalTime():HH:mm</span></div>
+                            <div class="chat-turn__body">@turn.Text</div>
+                        </div>
+                    }
+                    @if (_chatAsking)
+                    {
+                        <div class="chat-turn chat-turn--agent chat-turn--pending"><div class="chat-turn__role">Agent</div><div class="chat-turn__body"><span class="spinner-border spinner-border-sm me-2"></span>Thinking…</div></div>
+                    }
+                </div>
+                <div class="chat-suggestions mb-2">
+                    @foreach (var s in _chatSuggestions)
+                    {
+                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SendChat(s)" disabled="@_chatAsking">@s</button>
+                    }
+                </div>
+                <EditForm Model="this" OnValidSubmit="SendCurrentChat" FormName="followUpAsk">
+                    <div class="input-group">
+                        <InputText class="form-control" placeholder="Ask a question about this analysis…" @bind-Value="_chatInput" disabled="@_chatAsking" />
+                        <button class="btn btn-primary" type="submit" disabled="@(_chatAsking || string.IsNullOrWhiteSpace(_chatInput))">Send</button>
+                    </div>
+                </EditForm>
+                @if (_chatError is not null) { <div class="alert alert-danger mt-2 mb-0 small">@_chatError</div> }
+            }
+        </section>
+    }
+
+    <h3 class="subsection-title">Per-comment categorizations</h3>
+    <details class="surface-card">
+        <summary>Show all @run.Categorizations.Count categorizations</summary>
+        <div class="table-responsive mt-2">
+            <table class="table table-sm align-middle">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Comment ID</th>
+                        <th>Topic</th>
+                        <th>Sentiment</th>
+                        <th>Stance</th>
+                        <th>Commenter type</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var cat in run.Categorizations)
+                    {
+                        <tr>
+                            <td>@cat.SubmissionNumber</td>
+                            <td><a href="@($"comments/{Uri.EscapeDataString(cat.CommentId)}")"><code>@cat.CommentId</code></a></td>
+                            <td>@GetField(cat, "primary_topic", "topic", "category")</td>
+                            <td>@GetField(cat, "sentiment", "overall_sentiment")</td>
+                            <td>@GetField(cat, "stance", "position")</td>
+                            <td>@GetField(cat, "commenter_type", "type")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </details>
+}
+
+<style>
+    .page-header { margin-bottom: 1.25rem; }
+    .page-header__title { margin: 0.35rem 0 0.35rem; font-size: 1.85rem; }
+    .page-header__meta { color: var(--color-text-muted); margin: 0; max-width: 70ch; }
+    .meta-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem 1.25rem; }
+    .meta-label { display:block; text-transform:uppercase; letter-spacing:.08em; font-size:.7rem; color:var(--color-text-muted); font-weight:600; margin-bottom:.25rem; }
+    .meta-value { font-size:.95rem; }
+    .meta-value.endpoint { word-break: break-all; font-size:.85rem; }
+    .analysis-status { display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap; }
+    .analysis-status__main { flex:1 1 420px; }
+    .progress-card { padding: 1rem 1.25rem; }
+    .progress-card__header { display:flex; gap:.6rem; align-items:center; margin-bottom:.5rem; }
+    .progress-card__msg { color: var(--color-text-muted); font-size:.92rem; }
+    .progress { height: 18px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+    .progress-bar { background: linear-gradient(90deg, #2563eb, #14b8a6); color:#fff; font-size:.75rem; font-weight:600; text-align:center; line-height: 18px; min-width: 2.25rem; }
+
+    .section-title { font-size: 1.2rem; font-weight: 700; margin: 0; }
+    .subsection-title { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 .75rem; }
+
+    .summary-card { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; align-items: center; }
+    .summary-stat__value { font-size: 1.6rem; font-weight: 700; color: #1f4ed8; }
+    .summary-stat__value.sentiment { font-size: 1.05rem; color: #0f766e; }
+    .summary-stat__label { font-size: .7rem; text-transform: uppercase; letter-spacing: .1em; color: var(--color-text-muted); font-weight: 600; }
+
+    .overall-summary { margin: .25rem 0 0; line-height: 1.55; color: var(--color-text); font-size: .98rem; }
+
+    .theme-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1rem; }
+    .theme-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 1.1rem 1.2rem; box-shadow: var(--shadow-sm); display:flex; flex-direction:column; gap:.7rem; }
+    .theme-card__head { display:flex; align-items:flex-start; justify-content:space-between; gap:.75rem; }
+    .theme-card__title { font-size: 1.02rem; font-weight: 600; margin: .15rem 0 0; }
+    .theme-rank { font-size:.7rem; font-weight:700; letter-spacing:.08em; color:#1f4ed8; }
+    .theme-card__count { text-align:right; }
+    .theme-card__count span { font-size:1.4rem; font-weight:700; display:block; line-height:1; color: var(--color-text); }
+    .theme-card__count small { font-size:.7rem; color: var(--color-text-muted); text-transform:uppercase; letter-spacing:.08em; }
+    .theme-card__desc { color: var(--color-text-muted); font-size:.92rem; margin:0; line-height:1.45; }
+    .theme-card__args-label { font-size:.7rem; text-transform:uppercase; letter-spacing:.1em; font-weight:600; color: var(--color-text-muted); margin-bottom:.25rem; }
+    .theme-card__args ul { padding-left: 1.1rem; margin: 0; }
+    .theme-card__args li { font-size:.9rem; line-height:1.4; margin-bottom:.25rem; }
+
+    .stance-bar { display:flex; width:100%; height:22px; border-radius:6px; overflow:hidden; background:#e2e8f0; }
+    .stance-bar__seg { display:flex; align-items:center; justify-content:center; color:#fff; font-size:.68rem; padding:0 .35rem; white-space:nowrap; }
+    .stance-bar__seg.support { background:#10b981; }
+    .stance-bar__seg.oppose  { background:#ef4444; }
+    .stance-bar__seg.neutral { background:#64748b; }
+    .stance-bar__seg.mixed   { background:#f59e0b; }
+    .stance-bar__seg.other   { background:#6366f1; }
+    .stance-bar__lbl { text-transform: capitalize; }
+
+    .sub-chips { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.3rem; }
+    .sub-chip { font-size:.72rem; padding:2px 8px; border-radius:999px; background: var(--color-primary-soft); color:#1f4ed8; font-weight:600; }
+    .sub-chip--more { background:#e2e8f0; color: var(--color-text-muted); }
+
+    .pattern-item { padding: .25rem 0; line-height: 1.45; }
+    .raw { white-space: pre-wrap; font-size: .85rem; color: var(--color-text); margin: 0; }
+
+    .selection-hint { font-size: .85rem; }
+
+    .chat-panel { display: flex; flex-direction: column; }
+    .chat-history { max-height: 460px; overflow-y: auto; display: flex; flex-direction: column; gap: .65rem; padding-right: .25rem; }
+    .chat-turn { padding: .55rem .8rem; border-radius: 8px; border: 1px solid var(--color-border); }
+    .chat-turn--user { background: #eff6ff; border-color: #bfdbfe; align-self: flex-end; max-width: 85%; }
+    .chat-turn--agent { background: #f8fafc; align-self: flex-start; max-width: 90%; }
+    .chat-turn--pending { opacity: .85; }
+    .chat-turn__role { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; color: var(--color-text-muted); margin-bottom: .25rem; }
+    .chat-turn__time { font-weight: 400; margin-left: .35rem; opacity: .7; }
+    .chat-turn__body { white-space: pre-wrap; line-height: 1.5; font-size: .95rem; }
+    .chat-suggestions { display: flex; flex-wrap: wrap; gap: .4rem; }
+</style>
+
+@code {
+    private CancellationTokenSource? _cts;
+    private bool _isRunning;
+    private AnalysisProgress? _progress;
+    private string? _error;
+
+    // True when the current LastRun came from the Library (no source comments staged
+    // for a re-run). Used to swap the "Re-run analysis" CTA for a "go fetch comments" hint.
+    private bool IsLoadedFromLibrary => Store.LoadedRunId.HasValue && !Store.HasInput;
+
+    // Follow-up chat state
+    private bool _chatStarting;
+    private bool _chatAsking;
+    private string _chatInput = string.Empty;
+    private string? _chatError;
+    private static readonly string[] _chatSuggestions = new[]
+    {
+        "Which theme has the most opposition?",
+        "Summarize the recommendations in one paragraph.",
+        "What concerns appear in more than one theme group?",
+        "Which submissions reference attachments most heavily?",
+    };
+
+    protected override void OnInitialized()
+    {
+        _progress = Store.LastProgress;
+    }
+
+    private async Task StartRun()
+    {
+        if (!Store.HasInput || _isRunning) return;
+        _isRunning = true;
+        Store.IsRunning = true;
+        _error = null;
+        _progress = new AnalysisProgress { Phase = "Starting", Message = "Connecting…", Total = Store.Comments.Count };
+        Store.LastProgress = _progress;
+        _cts = new CancellationTokenSource();
+
+        var docId = Store.DocumentId ?? "";
+        var comments = Store.Comments;
+        var settings = SettingsStore.Current;
+
+        var progress = new Progress<AnalysisProgress>(p =>
+        {
+            _progress = p;
+            Store.LastProgress = p;
+            InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            var run = await Foundry.RunAsync(docId, comments, settings, progress, _cts.Token);
+            Store.LastRun = run;
+            Store.LoadedRunId = null;
+            if (!run.Succeeded) _error = run.ErrorMessage ?? "Unknown error.";
+
+            // Persist the run (regardless of success) so the Library page can show failures too.
+            try
+            {
+                Store.LoadedRunId = await Repo.SaveRunAsync(run, _cts.Token);
+            }
+            catch (Exception saveEx)
+            {
+                Logger.LogWarning(saveEx, "Failed to persist analysis run for document {DocId}.", docId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _isRunning = false;
+            Store.IsRunning = false;
+            _cts?.Dispose();
+            _cts = null;
+        }
+    }
+
+    private void CancelRun()
+    {
+        try { _cts?.Cancel(); } catch { }
+    }
+
+    public void Dispose()
+    {
+        try { _cts?.Cancel(); } catch { }
+        _cts?.Dispose();
+    }
+
+    private static int totalForGroup(ThemeGroup t) => t.StanceDistribution.Values.Sum();
+
+    private static string StanceClass(string key)
+    {
+        var k = (key ?? "").ToLowerInvariant();
+        if (k.Contains("support") || k.Contains("favor") || k.Contains("for")) return "support";
+        if (k.Contains("oppose") || k.Contains("against")) return "oppose";
+        if (k.Contains("neutral") || k.Contains("unclear")) return "neutral";
+        if (k.Contains("mixed")) return "mixed";
+        return "other";
+    }
+
+    private static string GetField(CategorizationResult cat, params string[] keys)
+    {
+        foreach (var k in keys)
+        {
+            if (cat.Parsed.TryGetValue(k, out var v) && v is not null)
+            {
+                if (v is IEnumerable<object?> list)
+                {
+                    return string.Join(", ", list.Where(x => x is not null).Select(x => x!.ToString()));
+                }
+                return v.ToString() ?? "";
+            }
+        }
+        return "";
+    }
+
+    private async Task DownloadReportJson()
+    {
+        if (Store.LastRun is null) return;
+        var json = CommentExporter.ToJson(Store.LastRun);
+        await JS.InvokeVoidAsync("downloadFile",
+            $"analysis_{Store.DocumentId}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.json",
+            "application/json;charset=utf-8", json);
+    }
+
+    private async Task DownloadReportText()
+    {
+        if (Store.LastRun is null) return;
+        var text = BuildTextReport(Store.LastRun);
+        await JS.InvokeVoidAsync("downloadFile",
+            $"analysis_{Store.DocumentId}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.txt",
+            "text/plain;charset=utf-8", text);
+    }
+
+    private async Task DownloadReportWord()
+    {
+        if (Store.LastRun is null) return;
+        var bytes = CollectiveAnalysisExporter.BuildWord(Store.LastRun);
+        await JS.InvokeVoidAsync("downloadBinaryFile",
+            $"collective-analysis_{Store.DocumentId}_{DateTime.UtcNow:yyyyMMdd-HHmm}.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Convert.ToBase64String(bytes));
+    }
+
+    private async Task DownloadReportExcel()
+    {
+        if (Store.LastRun is null) return;
+        var bytes = CollectiveAnalysisExporter.BuildExcel(Store.LastRun);
+        await JS.InvokeVoidAsync("downloadBinaryFile",
+            $"collective-analysis_{Store.DocumentId}_{DateTime.UtcNow:yyyyMMdd-HHmm}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            Convert.ToBase64String(bytes));
+    }
+
+    private async Task StartChat()
+    {
+        if (Store.LastRun is null) return;
+        _chatStarting = true;
+        _chatError = null;
+        try
+        {
+            await Foundry.StartFollowUpThreadAsync(Store.LastRun, SettingsStore.Current, default);
+            if (Store.LoadedRunId is Guid id && !string.IsNullOrEmpty(Store.LastRun.FollowUpThreadId))
+            {
+                try { await Repo.SetFollowUpThreadAsync(id, Store.LastRun.FollowUpThreadId!); }
+                catch (Exception ex) { Logger.LogWarning(ex, "Failed to persist follow-up thread ID."); }
+            }
+        }
+        catch (Exception ex)
+        {
+            _chatError = ex.Message;
+        }
+        finally
+        {
+            _chatStarting = false;
+        }
+    }
+
+    private Task SendCurrentChat()
+    {
+        var q = _chatInput;
+        _chatInput = string.Empty;
+        return SendChat(q);
+    }
+
+    private async Task SendChat(string question)
+    {
+        if (Store.LastRun is null || string.IsNullOrWhiteSpace(question)) return;
+        _chatAsking = true;
+        _chatError = null;
+        var beforeCount = Store.LastRun.FollowUpHistory.Count;
+        try
+        {
+            await Foundry.AskFollowUpAsync(Store.LastRun, question, SettingsStore.Current, default);
+            if (Store.LoadedRunId is Guid id)
+            {
+                // FoundryAnalysisService appends exactly two turns (user + agent); persist both.
+                var added = Store.LastRun.FollowUpHistory.Skip(beforeCount).ToList();
+                foreach (var t in added)
+                {
+                    try { await Repo.AppendFollowUpAsync(id, t); }
+                    catch (Exception ex) { Logger.LogWarning(ex, "Failed to persist follow-up turn."); }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _chatError = ex.Message;
+        }
+        finally
+        {
+            _chatAsking = false;
+        }
+    }
+
+    private static string BuildTextReport(AnalysisRun run)
+    {
+        var sb = new StringBuilder();
+        var sep = new string('=', 60);
+        var thin = new string('-', 60);
+        sb.AppendLine(sep);
+        sb.AppendLine("REGULATORY COMMENTS — AI ANALYSIS REPORT");
+        sb.AppendLine(sep);
+        sb.AppendLine($"Document:           {run.DocumentId}");
+        sb.AppendLine($"Started:            {run.StartedAt:yyyy-MM-dd HH:mm:ss} UTC");
+        sb.AppendLine($"Completed:          {run.CompletedAt:yyyy-MM-dd HH:mm:ss} UTC");
+        sb.AppendLine($"Comments analyzed:  {run.TotalComments}");
+        sb.AppendLine($"Batch size:         {run.BatchSize}");
+        sb.AppendLine();
+
+        var g = run.Grouped;
+        if (!string.IsNullOrWhiteSpace(g.OverallSummary))
+        {
+            sb.AppendLine("OVERALL SUMMARY");
+            sb.AppendLine(thin);
+            sb.AppendLine(g.OverallSummary);
+            sb.AppendLine();
+        }
+        if (!string.IsNullOrWhiteSpace(g.OverallSentiment))
+        {
+            sb.AppendLine($"OVERALL SENTIMENT: {g.OverallSentiment}");
+            sb.AppendLine();
+        }
+        if (g.ThemeGroups.Count > 0)
+        {
+            sb.AppendLine("THEME GROUPS");
+            sb.AppendLine(thin);
+            int i = 1;
+            foreach (var t in g.ThemeGroups.OrderByDescending(x => x.Count))
+            {
+                sb.AppendLine($"{i}. {t.GroupName}  ({t.Count} comments)");
+                if (!string.IsNullOrWhiteSpace(t.GroupDescription)) sb.AppendLine($"   {t.GroupDescription}");
+                if (t.StanceDistribution.Count > 0)
+                    sb.AppendLine("   Stance:   " + string.Join(" | ", t.StanceDistribution.Select(kv => $"{kv.Key}: {kv.Value}")));
+                if (t.SubmissionNumbers.Count > 0)
+                    sb.AppendLine("   Subs:     " + string.Join(", ", t.SubmissionNumbers.Take(20).Select(n => $"#{n}")) + (t.SubmissionNumbers.Count > 20 ? ", ..." : ""));
+                if (t.CommonArguments.Count > 0)
+                {
+                    sb.AppendLine("   Key arguments:");
+                    foreach (var arg in t.CommonArguments.Take(6)) sb.AppendLine($"     - {arg}");
+                }
+                sb.AppendLine();
+                i++;
+            }
+        }
+        if (g.Patterns.Count > 0)
+        {
+            sb.AppendLine("KEY PATTERNS");
+            sb.AppendLine(thin);
+            int i = 1; foreach (var p in g.Patterns) { sb.AppendLine($"{i}. {p}"); i++; }
+            sb.AppendLine();
+        }
+        if (g.Recommendations.Count > 0)
+        {
+            sb.AppendLine("RECOMMENDATIONS");
+            sb.AppendLine(thin);
+            int i = 1; foreach (var r in g.Recommendations) { sb.AppendLine($"{i}. {r}"); i++; }
+            sb.AppendLine();
+        }
+        if (!g.ParsedSuccessfully)
+        {
+            sb.AppendLine("RAW AGENT RESPONSE");
+            sb.AppendLine(thin);
+            sb.AppendLine(g.RawResponse);
+        }
+        sb.AppendLine(sep);
+        return sb.ToString();
+    }
+}

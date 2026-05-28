@@ -1,0 +1,395 @@
+@page "/comments"
+@rendermode InteractiveServer
+@inject RegulationsGovClient Client
+@inject ApiSettingsStore SettingsStore
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject AnalysisStore Analysis
+
+<PageTitle>Comments</PageTitle>
+
+<header class="page-header">
+    <span class="section-eyebrow">Workbench</span>
+    <h1 class="page-header__title">Comments</h1>
+    <p class="page-header__meta">
+        Active API: <code>@SettingsStore.Current.BaseUrl</code>
+        @if (SettingsStore.Current.IsUsingDefaultBaseUrl)
+        {
+            <span class="badge bg-secondary ms-1">default</span>
+        }
+        else
+        {
+            <span class="badge bg-info ms-1">custom</span>
+        }
+        @if (string.IsNullOrWhiteSpace(SettingsStore.Current.ApiKey))
+        {
+            <span class="badge bg-warning text-dark ms-1">no API key</span>
+        }
+    </p>
+</header>
+
+<section class="surface-card">
+    <EditForm Model="_request" OnValidSubmit="OnFetchAsync" FormName="fetchComments">
+        <div class="row g-3">
+            <div class="col-md-8">
+                <label class="form-label" for="docIdInput">Document or docket ID</label>
+                <InputText id="docIdInput" class="form-control" @bind-Value="_request.DocumentId" placeholder="ED-2025-SCC-0481-0001" />
+                <div class="form-text small">Examples: <code>ED-2025-SCC-0481-0001</code> (single document) or check the box below to use just the docket prefix (<code>ED-2025-SCC-0481</code>).</div>
+            </div>
+            <div class="col-md-4 d-flex align-items-start pt-md-4">
+                <div class="form-check">
+                    <InputCheckbox class="form-check-input" id="docketFilter" @bind-Value="_request.UseDocketFilter" />
+                    <label class="form-check-label" for="docketFilter">Treat ID as docket (broader search)</label>
+                </div>
+            </div>
+        </div>
+        <div class="row g-3 mt-1">
+            <div class="col-md-4">
+                <label class="form-label" for="pageSizeInput">Comments to analyze</label>
+                <InputNumber id="pageSizeInput" class="form-control" @bind-Value="_request.PageSize" min="5" max="250" />
+                <div class="form-text small">Newest first. Max 250 per fetch.</div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label" for="pageNumberInput">Page</label>
+                <InputNumber id="pageNumberInput" class="form-control" @bind-Value="_request.Page" min="1" />
+                <div class="form-text small">Only needed when a docket has more than 250 comments &mdash; use page 2, 3, … to see older ones.</div>
+            </div>
+        </div>
+        <div class="mt-4 d-flex gap-2 flex-wrap">
+            <button type="submit" class="btn btn-primary" disabled="@_isLoading">
+                @if (_isLoading) { <span class="spinner-border spinner-border-sm me-2"></span> }
+                Fetch comments
+            </button>
+            <button type="button" class="btn btn-outline-secondary" @onclick="ResetForm" disabled="@_isLoading">Reset</button>
+        </div>
+    </EditForm>
+</section>
+
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="alert alert-danger mt-3" role="alert">
+        <strong>Request failed.</strong> @_error
+        @if (!string.IsNullOrEmpty(_lastUrl))
+        {
+            <div class="small mt-1"><code>@_lastUrl</code></div>
+        }
+    </div>
+}
+
+@if (_result is not null && _result.Success)
+{
+    <section class="results-bar">
+        <div class="results-summary">
+            <span class="results-summary__count">@(_result.Comments.Count)</span>
+            <span> comment@(_result.Comments.Count == 1 ? "" : "s") returned</span>
+            @if (_result.TotalElements.HasValue)
+            {
+                <span> · <strong>@_result.TotalElements</strong> total</span>
+            }
+            @if (_result.TotalPages.HasValue)
+            {
+                <span> · <strong>@_result.TotalPages</strong> page@(_result.TotalPages == 1 ? "" : "s")</span>
+            }
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <button type="button" class="btn btn-outline-primary btn-sm" @onclick="DownloadCsv" disabled="@(_result.Comments.Count == 0)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Download CSV
+            </button>
+            <button type="button" class="btn btn-outline-primary btn-sm" @onclick="DownloadJson" disabled="@(_result.Comments.Count == 0)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Download JSON
+            </button>
+            <button type="button" class="btn btn-primary btn-sm" @onclick="RunAnalysis"
+                    disabled="@(_result.Comments.Count == 0 || !SettingsStore.Current.IsFoundryConfigured)"
+                    title="@(SettingsStore.Current.IsFoundryConfigured ? (Analysis.SelectedCount > 0 ? $"Analyze the {Analysis.SelectedCount} selected comment(s)" : "Analyze all fetched comments (no selection made)") : "Configure the Foundry endpoint + agent names on the Settings page first")">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M5 3v18l15-9z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+                @(Analysis.SelectedCount > 0 ? $"Analyze {Analysis.SelectedCount} selected" : "Analyze all fetched")
+            </button>
+        </div>
+    </section>
+    <div class="results-meta small text-muted mt-1"><code>@_result.RequestedUrl</code></div>
+
+    @if (_result.Comments.Count > 0 && _result.Comments.All(c => string.IsNullOrWhiteSpace(c.Attributes.Comment)))
+    {
+        <div class="alert alert-info mt-2 small mb-0">
+            <strong>Heads up:</strong> none of these comments have inline text &mdash; their content is in attached PDF/DOCX files.
+            The AI analysis will automatically download and extract attachment text before sending to the agents.
+        </div>
+    }
+    else if (_result.Comments.Count > 0 && _result.Comments.Any(c => string.IsNullOrWhiteSpace(c.Attributes.Comment)))
+    {
+        <div class="alert alert-light border mt-2 small mb-0">
+            <strong>@_result.Comments.Count(c => string.IsNullOrWhiteSpace(c.Attributes.Comment)) of @_result.Comments.Count</strong>
+            comments have no inline text &mdash; their attachments will be parsed during AI analysis.
+        </div>
+    }
+
+    @if (_result.Comments.Count > 0)
+    {
+        <div class="surface-card mt-3">
+            <div class="selection-toolbar d-flex flex-wrap gap-2 align-items-center mb-2">
+                <div class="me-2"><strong>@Analysis.SelectedCount</strong> of @_result.Comments.Count selected
+                    @if (_result.TotalElements is int total) { <span class="text-muted">· @total total in docket</span> }
+                </div>
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SelectAllVisible()">Select all visible</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SelectNewest(25)">Newest 25</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SelectOldest(25)">Oldest 25</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SelectNextUnselected(25)">Next 25 unselected</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="ClearSelection" disabled="@(Analysis.SelectedCount == 0)">Clear selection</button>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width:40px">
+                                <input type="checkbox" class="form-check-input"
+                                       title="@(AllVisibleSelected ? "Deselect all" : "Select all")"
+                                       aria-label="Select all comments on this page"
+                                       checked="@AllVisibleSelected"
+                                       @ref="_selectAllCheckbox"
+                                       @onchange="OnHeaderSelectAllChanged" />
+                            </th>
+                            <th style="width:48px">#</th>
+                            <th>Comment ID</th>
+                            <th>Posted</th>
+                            <th>Commenter</th>
+                            <th>Organization</th>
+                            <th>Title</th>
+                            <th style="width:120px"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @{ var idx = 1; }
+                        @foreach (var c in _result.Comments)
+                        {
+                            var commentRef = c;
+                            <tr>
+                                <td><input type="checkbox" class="form-check-input" checked="@Analysis.IsSelected(commentRef.Id)" @onchange="() => ToggleOne(commentRef)" /></td>
+                                <td class="text-muted">@idx</td>
+                                <td><a href="@($"comments/{Uri.EscapeDataString(c.Id)}")"><code>@c.Id</code></a></td>
+                                <td>@(c.Attributes.PostedDate?.ToString("yyyy-MM-dd"))</td>
+                                <td>@FormatName(c.Attributes)</td>
+                                <td>@c.Attributes.Organization</td>
+                                <td>@c.Attributes.Title</td>
+                                <td class="text-end">
+                                    <a class="btn btn-sm btn-outline-secondary" href="@($"comments/{Uri.EscapeDataString(c.Id)}")">Open</a>
+                                </td>
+                            </tr>
+                            idx++;
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="alert alert-warning mt-3">No comments returned. Try toggling “Treat ID as docket (broader search)”.</div>
+    }
+}
+
+<style>
+    .page-header { margin-bottom: 1.25rem; }
+    .page-header__title { margin: 0.35rem 0 0.35rem; font-size: 1.85rem; }
+    .page-header__meta { color: var(--color-text-muted); margin: 0; }
+    .results-bar {
+        margin-top: 1.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    .results-summary {
+        font-size: 0.95rem;
+        color: var(--color-text);
+    }
+    .results-summary__count {
+        font-weight: 600;
+        font-size: 1.05rem;
+    }
+    .results-meta { word-break: break-all; }
+</style>
+
+@code {
+    private FetchCommentsRequest _request = new();
+    private FetchCommentsResult? _result;
+    private bool _isLoading;
+    private string? _error;
+    private string? _lastUrl;
+    private ElementReference _selectAllCheckbox;
+
+    private bool AllVisibleSelected =>
+        _result is not null
+        && _result.Comments.Count > 0
+        && _result.Comments.All(c => Analysis.IsSelected(c.Id));
+
+    private bool SomeVisibleSelected =>
+        _result is not null
+        && _result.Comments.Any(c => Analysis.IsSelected(c.Id))
+        && !AllVisibleSelected;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Drive the header checkbox’s indeterminate state from C# (no Razor binding for it).
+        if (_result is not null && _result.Comments.Count > 0)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("setIndeterminate", _selectAllCheckbox, SomeVisibleSelected);
+            }
+            catch (JSDisconnectedException) { /* circuit closed */ }
+            catch (Microsoft.JSInterop.JSException) { /* element not yet in DOM */ }
+        }
+    }
+
+    private void OnHeaderSelectAllChanged(ChangeEventArgs e)
+    {
+        if (_result is null || _result.Comments.Count == 0) return;
+        var shouldSelect = e.Value is bool b ? b : !AllVisibleSelected;
+        if (shouldSelect)
+        {
+            Analysis.SelectAll(_result.Comments);
+        }
+        else
+        {
+            foreach (var c in _result.Comments)
+            {
+                if (Analysis.IsSelected(c.Id)) Analysis.ToggleSelection(c);
+            }
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        var settings = SettingsStore.Current;
+        _request = new FetchCommentsRequest
+        {
+            DocumentId = string.IsNullOrWhiteSpace(settings.DefaultDocumentId)
+                ? "ED-2025-SCC-0481-0001"
+                : settings.DefaultDocumentId,
+            PageSize = 25,
+            Page = 1,
+            UseDocketFilter = false,
+        };
+    }
+
+    private async Task OnFetchAsync()
+    {
+        _isLoading = true;
+        _error = null;
+        _result = null;
+        try
+        {
+            _result = await Client.FetchCommentsAsync(_request);
+            _lastUrl = _result.RequestedUrl;
+            if (!_result.Success)
+            {
+                _error = _result.ErrorMessage;
+            }
+            else
+            {
+                // A new fetch invalidates any prior selection (different docket / page / etc.).
+                Analysis.ClearSelection();
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void ResetForm()
+    {
+        OnInitialized();
+        _result = null;
+        _error = null;
+    }
+
+    private async Task DownloadCsv()
+    {
+        if (_result is null || _result.Comments.Count == 0) return;
+        var csv = CommentExporter.ToCsv(_result.Comments);
+        var name = $"comments_{_request.DocumentId}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv";
+        await JS.InvokeVoidAsync("downloadFile", name, "text/csv;charset=utf-8", csv);
+    }
+
+    private async Task DownloadJson()
+    {
+        if (_result is null || _result.Comments.Count == 0) return;
+        var payload = new
+        {
+            request = new { _request.DocumentId, _request.UseDocketFilter, _request.PageSize, _request.Page },
+            requested_url = _result.RequestedUrl,
+            total_pages = _result.TotalPages,
+            total_elements = _result.TotalElements,
+            count = _result.Comments.Count,
+            comments = _result.Comments,
+        };
+        var json = CommentExporter.ToJson(payload);
+        var name = $"comments_{_request.DocumentId}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.json";
+        await JS.InvokeVoidAsync("downloadFile", name, "application/json;charset=utf-8", json);
+    }
+
+    private void RunAnalysis()
+    {
+        if (_result is null || _result.Comments.Count == 0) return;
+        Analysis.DocumentId = _request.DocumentId;
+        // If the user picked specific rows, analyze only those. Otherwise fall back to everything fetched.
+        Analysis.Comments = Analysis.SelectedCount > 0
+            ? Analysis.SelectedComments.Values.ToList()
+            : _result.Comments;
+        Analysis.LastRun = null;
+        Analysis.IsRunning = false;
+        Analysis.LastProgress = null;
+        Navigation.NavigateTo("/analysis");
+    }
+
+    private void ToggleOne(CommentResource c) => Analysis.ToggleSelection(c);
+
+    private void SelectAllVisible()
+    {
+        if (_result is null) return;
+        Analysis.SelectAll(_result.Comments);
+    }
+
+    private void SelectNewest(int n)
+    {
+        if (_result is null) return;
+        var picks = _result.Comments
+            .OrderByDescending(c => c.Attributes.PostedDate ?? DateTimeOffset.MinValue)
+            .Take(n);
+        Analysis.SelectAll(picks);
+    }
+
+    private void SelectOldest(int n)
+    {
+        if (_result is null) return;
+        var picks = _result.Comments
+            .OrderBy(c => c.Attributes.PostedDate ?? DateTimeOffset.MaxValue)
+            .Take(n);
+        Analysis.SelectAll(picks);
+    }
+
+    private void SelectNextUnselected(int n)
+    {
+        if (_result is null) return;
+        var picks = _result.Comments
+            .Where(c => !Analysis.IsSelected(c.Id))
+            .Take(n);
+        Analysis.SelectAll(picks);
+    }
+
+    private void ClearSelection() => Analysis.ClearSelection();
+
+    private static string FormatName(CommentAttributes a)
+    {
+        var name = $"{a.FirstName} {a.LastName}".Trim();
+        return string.IsNullOrWhiteSpace(name) ? "(anonymous)" : name;
+    }
+}

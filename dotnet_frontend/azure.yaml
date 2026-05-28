@@ -1,0 +1,36 @@
+# azd project descriptor for the .NET 9 Blazor Server web frontend.
+# Run `azd up` from this directory (dotnet_frontend/).
+#
+# Required env vars (set via `azd env set ...` or `.azure/<env>/.env`):
+#   REGS_API_KEY                    - Regulations.gov v4 API key
+#   FOUNDRY_PROJECT_ENDPOINT        - Foundry project endpoint URL
+#   FOUNDRY_CATEGORIZATION_AGENT_ID - asst_... ID for the categorization agent
+#   FOUNDRY_GROUPING_AGENT_ID       - asst_... ID for the grouping agent
+#   FOUNDRY_FOLLOWUP_AGENT_ID       - asst_... ID for the follow-up agent (optional)
+#   FOUNDRY_MODEL_DEPLOYMENT        - model deployment name (default: gpt-5.4)
+#
+# Quick start:
+#   cd dotnet_frontend
+#   azd auth login
+#   azd env new doedweb-dev
+#   azd env set REGS_API_KEY <your-key>
+#   azd env set FOUNDRY_PROJECT_ENDPOINT https://...
+#   azd env set FOUNDRY_CATEGORIZATION_AGENT_ID asst_...
+#   azd env set FOUNDRY_GROUPING_AGENT_ID asst_...
+#   azd env set FOUNDRY_FOLLOWUP_AGENT_ID asst_...
+#   azd up
+#
+# After the first `azd up`, copy the `foundryRoleAssignmentCommand` from the
+# deployment outputs and run it once to grant the web app's managed identity
+# the "Azure AI User" role on the Foundry project (this lives in a different
+# RG, so it isn't part of this template).
+
+name: doed-regulatory-comments-web
+metadata:
+  template: doed-regulatory-comments-web@1.0.0
+
+services:
+  web:
+    project: .
+    language: dotnet
+    host: appservice

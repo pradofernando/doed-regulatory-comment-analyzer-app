@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "baseName": {
+      "value": "doed-comments"
+    },
+    "location": {
+      "metadata": {
+        "description": "DEFAULT REGION: Change this value to deploy to a different Azure region"
+      },
+      "value": "eastus"
+    },
+    "gptCapacity": {
+      "value": 10
+    },
+    "regulationsGovApiKey": {
+      "value": ""
+    },
+    "documentId": {
+      "value": "ED-2025-SCC-0481-0001"
+    },
+    "batchSize": {
+      "value": 5
+    }
+  }
+}

@@ -1,0 +1,155 @@
+@page "/comments/{CommentId}"
+@rendermode InteractiveServer
+@inject RegulationsGovClient Client
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Comment @CommentId</PageTitle>
+
+<p class="back-link"><a href="comments">&larr; Back to comments</a></p>
+
+<header class="page-header">
+    <span class="section-eyebrow">Comment detail</span>
+    <h1 class="page-header__title"><code>@CommentId</code></h1>
+</header>
+
+@if (_loading)
+{
+    <div class="surface-card d-flex align-items-center gap-2">
+        <div class="spinner-border spinner-border-sm"></div>
+        <span>Loading…</span>
+    </div>
+}
+else if (_detail?.Data is null)
+{
+    <div class="alert alert-danger">Could not load comment <code>@CommentId</code>.</div>
+}
+else
+{
+    var a = _detail.Data.Attributes;
+    var attachments = GetAttachments(_detail);
+
+    <div class="d-flex gap-2 flex-wrap mb-3">
+        <button type="button" class="btn btn-outline-primary btn-sm" @onclick="DownloadJson">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Download JSON
+        </button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="DownloadText" disabled="@string.IsNullOrWhiteSpace(a.Comment)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 21h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Download text
+        </button>
+    </div>
+
+    <section class="surface-card">
+        <div class="meta-grid">
+            <div><span class="meta-label">Posted</span><span class="meta-value">@(a.PostedDate?.ToString("yyyy-MM-dd") ?? "—")</span></div>
+            <div><span class="meta-label">Modified</span><span class="meta-value">@(a.ModifyDate?.ToString("yyyy-MM-dd") ?? "—")</span></div>
+            <div><span class="meta-label">Agency</span><span class="meta-value">@(string.IsNullOrWhiteSpace(a.AgencyId) ? "—" : a.AgencyId)</span></div>
+            <div><span class="meta-label">Document type</span><span class="meta-value">@(string.IsNullOrWhiteSpace(a.DocumentType) ? "—" : a.DocumentType)</span></div>
+            <div><span class="meta-label">Commenter</span><span class="meta-value">@($"{a.FirstName} {a.LastName}".Trim()) </span></div>
+            <div><span class="meta-label">Organization</span><span class="meta-value">@(string.IsNullOrWhiteSpace(a.Organization) ? "—" : a.Organization)</span></div>
+        </div>
+    </section>
+
+    <h2 class="h5 mt-4">@a.Title</h2>
+    <article class="surface-card comment-body">
+        @(string.IsNullOrWhiteSpace(a.Comment) ? "(No inline comment text.)" : a.Comment)
+    </article>
+
+    if (attachments.Count > 0)
+    {
+        <h2 class="h5 mt-4">Attachments (@attachments.Count)</h2>
+        <ul class="list-group attachments">
+            @foreach (var att in attachments)
+            {
+                <li class="list-group-item">
+                    <div class="fw-semibold">@att.Attributes.Title</div>
+                    @if (att.Attributes.FileFormats is { Count: > 0 })
+                    {
+                        <div class="small mt-1">
+                            @foreach (var f in att.Attributes.FileFormats)
+                            {
+                                <a class="me-2" href="@f.FileUrl" target="_blank" rel="noreferrer">@(f.Format ?? "file") ↗</a>
+                            }
+                        </div>
+                    }
+                </li>
+            }
+        </ul>
+    }
+}
+
+<style>
+    .back-link { margin-bottom: 0.5rem; }
+    .page-header { margin-bottom: 1.25rem; }
+    .page-header__title { margin: 0.35rem 0 0.35rem; font-size: 1.5rem; }
+    .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem 1.5rem;
+    }
+    .meta-label {
+        display: block;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.7rem;
+        color: var(--color-text-muted);
+        font-weight: 600;
+        margin-bottom: 0.25rem;
+    }
+    .meta-value {
+        font-size: 0.95rem;
+    }
+    .comment-body {
+        white-space: pre-wrap;
+        line-height: 1.55;
+        font-size: 0.96rem;
+    }
+    .attachments .list-group-item {
+        border-color: var(--color-border);
+        background: var(--color-surface);
+    }
+</style>
+
+@code {
+    [Parameter] public string CommentId { get; set; } = string.Empty;
+
+    private CommentDetailResponse? _detail;
+    private bool _loading;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        try
+        {
+            _detail = await Client.GetCommentAsync(CommentId);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task DownloadJson()
+    {
+        if (_detail?.Data is null) return;
+        var json = CommentExporter.ToJson(_detail);
+        await JS.InvokeVoidAsync("downloadFile", $"{CommentId}.json", "application/json;charset=utf-8", json);
+    }
+
+    private async Task DownloadText()
+    {
+        if (_detail?.Data is null) return;
+        var a = _detail.Data.Attributes;
+        var text = $"Comment ID: {CommentId}\nTitle: {a.Title}\nPosted: {a.PostedDate:yyyy-MM-dd}\nCommenter: {a.FirstName} {a.LastName}\nOrganization: {a.Organization}\n\n{a.Comment}";
+        await JS.InvokeVoidAsync("downloadFile", $"{CommentId}.txt", "text/plain;charset=utf-8", text);
+    }
+
+    private static List<IncludedResource> GetAttachments(CommentDetailResponse? detail)
+    {
+        if (detail?.Included is null) return new List<IncludedResource>();
+        return detail.Included
+            .Where(i => string.Equals(i.Type, "attachments", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+}
