@@ -13,6 +13,9 @@ azure_func/doed_regulatory_comments_func/local.settings.json
 dotnet_frontend/App_Data/
 dotnet_frontend/bin/
 dotnet_frontend/obj/
+dotnet_frontend.Tests/bin/
+dotnet_frontend.Tests/obj/
+dotnet_frontend.Tests/TestResults/
 dotnet_frontend/appsettings.Local.json
 dotnet_frontend/appsettings.*.local.json
 

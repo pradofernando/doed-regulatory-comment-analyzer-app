@@ -4,21 +4,31 @@
 # Required env vars (set via `azd env set ...` or `.azure/<env>/.env`):
 #   REGS_API_KEY                    - Regulations.gov v4 API key
 #   FOUNDRY_PROJECT_ENDPOINT        - Foundry project endpoint URL
-#   FOUNDRY_CATEGORIZATION_AGENT_ID - asst_... ID for the categorization agent
-#   FOUNDRY_GROUPING_AGENT_ID       - asst_... ID for the grouping agent
-#   FOUNDRY_FOLLOWUP_AGENT_ID       - asst_... ID for the follow-up agent (optional)
+#   FOUNDRY_CATEGORIZATION_AGENT_NAME    - published categorization prompt-agent name
+#   FOUNDRY_CATEGORIZATION_AGENT_VERSION - categorization prompt-agent version
+#   FOUNDRY_GROUPING_AGENT_NAME          - published grouping prompt-agent name
+#   FOUNDRY_GROUPING_AGENT_VERSION       - grouping prompt-agent version
+#   FOUNDRY_FOLLOWUP_AGENT_NAME          - follow-up prompt-agent name (optional)
+#   FOUNDRY_FOLLOWUP_AGENT_VERSION       - follow-up prompt-agent version (optional)
 #   FOUNDRY_MODEL_DEPLOYMENT        - model deployment name (default: gpt-5.4)
 #
 # Quick start:
 #   cd dotnet_frontend
-#   azd auth login
-#   azd env new doedweb-dev
+#   azd auth login --tenant-id <tenant-id>
+#   azd env new doed-comments-<unique-suffix> --no-prompt
+#   azd env set AZURE_SUBSCRIPTION_ID <subscription-id>
+#   azd env set AZURE_LOCATION eastus
 #   azd env set REGS_API_KEY <your-key>
 #   azd env set FOUNDRY_PROJECT_ENDPOINT https://...
-#   azd env set FOUNDRY_CATEGORIZATION_AGENT_ID asst_...
-#   azd env set FOUNDRY_GROUPING_AGENT_ID asst_...
-#   azd env set FOUNDRY_FOLLOWUP_AGENT_ID asst_...
+#   azd env set FOUNDRY_CATEGORIZATION_AGENT_NAME RegulatoryCommentCategorizationAgent
+#   azd env set FOUNDRY_GROUPING_AGENT_NAME RegulatoryCommentGroupingAgent
+#   azd env set FOUNDRY_FOLLOWUP_AGENT_NAME RegulatoryCommentFollowUpAgent
+#   azd provision --preview --no-prompt
+#   azd package --no-prompt
 #   azd up
+#
+# See DEPLOYMENT.md for persistence profiles, optional services, RBAC, verification,
+# security hardening, migration, backup, rollback, and troubleshooting.
 #
 # After the first `azd up`, copy the `foundryRoleAssignmentCommand` from the
 # deployment outputs and run it once to grant the web app's managed identity

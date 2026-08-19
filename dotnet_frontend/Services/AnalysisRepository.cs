@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Globalization;
+using System.Text;
 using DoedRegulatoryComments.Web.Data;
 using DoedRegulatoryComments.Web.Services;
 using Microsoft.EntityFrameworkCore;
@@ -14,7 +16,7 @@ namespace DoedRegulatoryComments.Web.Services;
 /// their own DbContext per call (Blazor circuits are scoped and a long-running task may outlive
 /// a single scope's DbContext lifetime).
 /// </remarks>
-public sealed class AnalysisRepository
+public sealed class AnalysisRepository : IAnalysisRepository
 {
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -30,19 +32,6 @@ public sealed class AnalysisRepository
         _logger = logger;
     }
 
-    public sealed record RunSummary(
-        Guid Id,
-        string DocumentId,
-        DateTimeOffset StartedAt,
-        DateTimeOffset? CompletedAt,
-        int TotalComments,
-        int ThemeCount,
-        bool Succeeded,
-        string? ErrorMessage,
-        string? OverallSentiment);
-
-    public sealed record ListFilter(string? DocumentId = null, bool? SucceededOnly = null, int Take = 100);
-
     public async Task<Guid> SaveRunAsync(AnalysisRun run, CancellationToken ct = default)
     {
         await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -51,6 +40,7 @@ public sealed class AnalysisRepository
         {
             Id = Guid.NewGuid(),
             DocumentId = run.DocumentId,
+            SessionName = AnalysisSessionNames.Normalize(run.SessionName),
             StartedAt = run.StartedAt,
             CompletedAt = run.CompletedAt,
             BatchSize = run.BatchSize,
@@ -148,9 +138,28 @@ public sealed class AnalysisRepository
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<RunSummary>> ListAsync(ListFilter filter, CancellationToken ct = default)
+    public async Task RenameRunAsync(Guid runId, string? sessionName, CancellationToken ct = default)
     {
         await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var run = await db.Runs.FirstOrDefaultAsync(r => r.Id == runId, ct).ConfigureAwait(false);
+        if (run is null) return;
+        run.SessionName = AnalysisSessionNames.Normalize(sessionName);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<AnalysisRunSummary>> ListAsync(
+        AnalysisListFilter filter,
+        CancellationToken ct = default) =>
+        (await ListPageAsync(filter, cancellationToken: ct).ConfigureAwait(false)).Items;
+
+    public async Task<AnalysisPage<AnalysisRunSummary>> ListPageAsync(
+        AnalysisListFilter filter,
+        string? continuationToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = await _factory.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var take = Math.Clamp(filter.Take, 1, 500);
+        var offset = DecodeOffset(continuationToken);
 
         var q = db.Runs.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(filter.DocumentId))
@@ -158,10 +167,7 @@ public sealed class AnalysisRepository
         if (filter.SucceededOnly is true)
             q = q.Where(r => r.Succeeded);
 
-        return await q
-            .OrderByDescending(r => r.StartedAt)
-            .Take(filter.Take)
-            .Select(r => new RunSummary(
+        var projected = q.Select(r => new AnalysisRunSummary(
                 r.Id,
                 r.DocumentId,
                 r.StartedAt,
@@ -170,9 +176,29 @@ public sealed class AnalysisRepository
                 r.ThemeGroups.Count,
                 r.Succeeded,
                 r.ErrorMessage,
-                r.OverallSentiment))
-            .ToListAsync(ct)
+                r.OverallSentiment,
+                r.SessionName));
+
+        if (db.Database.IsSqlite())
+        {
+            var rows = await projected.ToListAsync(cancellationToken).ConfigureAwait(false);
+            var page = rows
+                .OrderByDescending(r => r.StartedAt)
+                .ThenByDescending(r => r.Id)
+                .Skip(offset)
+                .Take(take + 1)
+                .ToList();
+            return ToPage(page, take, offset);
+        }
+
+        var databasePage = await projected
+            .OrderByDescending(r => r.StartedAt)
+            .ThenByDescending(r => r.Id)
+            .Skip(offset)
+            .Take(take + 1)
+            .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+        return ToPage(databasePage, take, offset);
     }
 
     public async Task<AnalysisRun?> LoadRunAsync(Guid id, CancellationToken ct = default)
@@ -191,6 +217,7 @@ public sealed class AnalysisRepository
 
         var run = new AnalysisRun
         {
+            SessionName = stored.SessionName,
             DocumentId = stored.DocumentId,
             StartedAt = stored.StartedAt,
             CompletedAt = stored.CompletedAt,
@@ -258,5 +285,38 @@ public sealed class AnalysisRepository
         if (string.IsNullOrWhiteSpace(json)) return default;
         try { return JsonSerializer.Deserialize<T>(json, JsonOpts); }
         catch { return default; }
+    }
+
+    private static AnalysisPage<AnalysisRunSummary> ToPage(
+        List<AnalysisRunSummary> rows,
+        int take,
+        int offset)
+    {
+        var hasMore = rows.Count > take;
+        var items = rows.Take(take).ToList();
+        return new AnalysisPage<AnalysisRunSummary>(
+            items,
+            hasMore ? EncodeOffset(offset + items.Count) : null);
+    }
+
+    private static string EncodeOffset(int offset) =>
+        Convert.ToBase64String(Encoding.UTF8.GetBytes(offset.ToString(CultureInfo.InvariantCulture)));
+
+    private static int DecodeOffset(string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return 0;
+        try
+        {
+            var text = Encoding.UTF8.GetString(Convert.FromBase64String(token));
+            if (int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var offset)
+                && offset >= 0)
+            {
+                return offset;
+            }
+        }
+        catch (FormatException)
+        {
+        }
+        throw new ArgumentException("The continuation token is invalid.", nameof(token));
     }
 }

@@ -48,6 +48,11 @@ else
             <div><span class="meta-label">Document type</span><span class="meta-value">@(string.IsNullOrWhiteSpace(a.DocumentType) ? "—" : a.DocumentType)</span></div>
             <div><span class="meta-label">Commenter</span><span class="meta-value">@($"{a.FirstName} {a.LastName}".Trim()) </span></div>
             <div><span class="meta-label">Organization</span><span class="meta-value">@(string.IsNullOrWhiteSpace(a.Organization) ? "—" : a.Organization)</span></div>
+            <div>
+                <span class="meta-label">Original comment</span>
+                <a class="meta-value" href="@RegulationsGovCommentUrl" target="_blank" rel="noopener noreferrer"
+                   aria-label="View comment @CommentId on Regulations.gov">View on Regulations.gov ↗</a>
+            </div>
         </div>
     </section>
 
@@ -105,7 +110,13 @@ else
         line-height: 1.55;
         font-size: 0.96rem;
     }
+    .attachments {
+        --bs-list-group-color: var(--color-text);
+        --bs-list-group-bg: var(--color-surface);
+        --bs-list-group-border-color: var(--color-border);
+    }
     .attachments .list-group-item {
+        color: var(--color-text);
         border-color: var(--color-border);
         background: var(--color-surface);
     }
@@ -116,6 +127,8 @@ else
 
     private CommentDetailResponse? _detail;
     private bool _loading;
+    private string RegulationsGovCommentUrl =>
+        $"https://www.regulations.gov/comment/{Uri.EscapeDataString(CommentId)}";
 
     protected override async Task OnParametersSetAsync()
     {

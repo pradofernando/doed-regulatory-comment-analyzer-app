@@ -5,6 +5,7 @@
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @inject AnalysisStore Analysis
+@inject CommentsBrowseState Browse
 
 <PageTitle>Comments</PageTitle>
 
@@ -34,25 +35,13 @@
             <div class="col-md-8">
                 <label class="form-label" for="docIdInput">Document or docket ID</label>
                 <InputText id="docIdInput" class="form-control" @bind-Value="_request.DocumentId" placeholder="ED-2025-SCC-0481-0001" />
-                <div class="form-text small">Examples: <code>ED-2025-SCC-0481-0001</code> (single document) or check the box below to use just the docket prefix (<code>ED-2025-SCC-0481</code>).</div>
+                <div class="form-text small">Docket search is on by default. A document ID such as <code>ED-2025-SCC-0481-0001</code> uses its docket prefix; a docket ID such as <code>ED-2025-SCC-0481</code> is used as entered.</div>
             </div>
             <div class="col-md-4 d-flex align-items-start pt-md-4">
                 <div class="form-check">
                     <InputCheckbox class="form-check-input" id="docketFilter" @bind-Value="_request.UseDocketFilter" />
                     <label class="form-check-label" for="docketFilter">Treat ID as docket (broader search)</label>
                 </div>
-            </div>
-        </div>
-        <div class="row g-3 mt-1">
-            <div class="col-md-4">
-                <label class="form-label" for="pageSizeInput">Comments to analyze</label>
-                <InputNumber id="pageSizeInput" class="form-control" @bind-Value="_request.PageSize" min="5" max="250" />
-                <div class="form-text small">Newest first. Max 250 per fetch.</div>
-            </div>
-            <div class="col-md-4">
-                <label class="form-label" for="pageNumberInput">Page</label>
-                <InputNumber id="pageNumberInput" class="form-control" @bind-Value="_request.Page" min="1" />
-                <div class="form-text small">Only needed when a docket has more than 250 comments &mdash; use page 2, 3, … to see older ones.</div>
             </div>
         </div>
         <div class="mt-4 d-flex gap-2 flex-wrap">
@@ -81,14 +70,14 @@
     <section class="results-bar">
         <div class="results-summary">
             <span class="results-summary__count">@(_result.Comments.Count)</span>
-            <span> comment@(_result.Comments.Count == 1 ? "" : "s") returned</span>
+            <span> comment@(_result.Comments.Count == 1 ? "" : "s") fetched</span>
             @if (_result.TotalElements.HasValue)
             {
                 <span> · <strong>@_result.TotalElements</strong> total</span>
             }
             @if (_result.TotalPages.HasValue)
             {
-                <span> · <strong>@_result.TotalPages</strong> page@(_result.TotalPages == 1 ? "" : "s")</span>
+                <span> · <strong>@_result.TotalPages</strong> API page@(_result.TotalPages == 1 ? "" : "s")</span>
             }
         </div>
         <div class="d-flex gap-2 flex-wrap">
@@ -128,11 +117,30 @@
     @if (_result.Comments.Count > 0)
     {
         <div class="surface-card mt-3">
+            <div class="comments-filter mb-2">
+                <div class="comments-filter__search">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.7"/><path d="m20 20-3-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                    <input type="search" class="form-control form-control-sm" placeholder="Filter by commenter, organization, title, or ID…"
+                           aria-label="Filter comments"
+                           value="@_filterText" @oninput="OnFilterInput" />
+                    @if (!string.IsNullOrEmpty(_filterText))
+                    {
+                        <button type="button" class="btn btn-sm btn-link comments-filter__clear" @onclick="ClearFilter">Clear</button>
+                    }
+                </div>
+                <span class="comments-filter__count text-muted small">
+                    Showing <strong>@DisplayComments.Count</strong> of @_result.Comments.Count
+                </span>
+            </div>
             <div class="selection-toolbar d-flex flex-wrap gap-2 align-items-center mb-2">
                 <div class="me-2"><strong>@Analysis.SelectedCount</strong> of @_result.Comments.Count selected
                     @if (_result.TotalElements is int total) { <span class="text-muted">· @total total in docket</span> }
                 </div>
                 <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SelectAllVisible()">Select all visible</button>
+                @if (!string.IsNullOrEmpty(_filterText))
+                {
+                    <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="SelectAllMatchingFilter">Select all matching filter (@DisplayComments.Count)</button>
+                }
                 <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SelectNewest(25)">Newest 25</button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SelectOldest(25)">Oldest 25</button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SelectNextUnselected(25)">Next 25 unselected</button>
@@ -152,16 +160,16 @@
                             </th>
                             <th style="width:48px">#</th>
                             <th>Comment ID</th>
-                            <th>Posted</th>
-                            <th>Commenter</th>
-                            <th>Organization</th>
-                            <th>Title</th>
+                            <th class="sortable" @onclick="() => ToggleSort(CommentSortColumn.Posted)">Posted @SortIndicator(CommentSortColumn.Posted)</th>
+                            <th class="sortable" @onclick="() => ToggleSort(CommentSortColumn.Commenter)">Commenter @SortIndicator(CommentSortColumn.Commenter)</th>
+                            <th class="sortable" @onclick="() => ToggleSort(CommentSortColumn.Organization)">Organization @SortIndicator(CommentSortColumn.Organization)</th>
+                            <th class="sortable" @onclick="() => ToggleSort(CommentSortColumn.Title)">Title @SortIndicator(CommentSortColumn.Title)</th>
                             <th style="width:120px"></th>
                         </tr>
                     </thead>
                     <tbody>
                         @{ var idx = 1; }
-                        @foreach (var c in _result.Comments)
+                        @foreach (var c in DisplayComments)
                         {
                             var commentRef = c;
                             <tr>
@@ -177,6 +185,12 @@
                                 </td>
                             </tr>
                             idx++;
+                        }
+                        @if (DisplayComments.Count == 0)
+                        {
+                            <tr>
+                                <td colspan="8" class="text-center text-muted py-4">No comments match “@_filterText”.</td>
+                            </tr>
                         }
                     </tbody>
                 </table>
@@ -210,6 +224,26 @@
         font-size: 1.05rem;
     }
     .results-meta { word-break: break-all; }
+    .comments-filter {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    .comments-filter__search {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: .4rem;
+        flex: 1 1 320px;
+        max-width: 480px;
+    }
+    .comments-filter__search > svg { color: var(--color-text-muted); flex: 0 0 auto; }
+    .comments-filter__clear { padding: 0 .25rem; white-space: nowrap; }
+    th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    th.sortable:hover { color: var(--color-primary); }
+    .sort-indicator { font-size: .7rem; opacity: .7; }
 </style>
 
 @code {
@@ -220,14 +254,22 @@
     private string? _lastUrl;
     private ElementReference _selectAllCheckbox;
 
+    private string _filterText = string.Empty;
+    private CommentSortColumn _sortColumn = CommentSortColumn.None;
+    private bool _sortDescending;
+
+    /// <summary>The fetched comments after applying the active filter + sort.</summary>
+    private IReadOnlyList<CommentResource> DisplayComments =>
+        _result is null
+            ? Array.Empty<CommentResource>()
+            : CommentFilter.Apply(_result.Comments, _filterText, _sortColumn, _sortDescending);
+
     private bool AllVisibleSelected =>
-        _result is not null
-        && _result.Comments.Count > 0
-        && _result.Comments.All(c => Analysis.IsSelected(c.Id));
+        DisplayComments.Count > 0
+        && DisplayComments.All(c => Analysis.IsSelected(c.Id));
 
     private bool SomeVisibleSelected =>
-        _result is not null
-        && _result.Comments.Any(c => Analysis.IsSelected(c.Id))
+        DisplayComments.Any(c => Analysis.IsSelected(c.Id))
         && !AllVisibleSelected;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -246,15 +288,15 @@
 
     private void OnHeaderSelectAllChanged(ChangeEventArgs e)
     {
-        if (_result is null || _result.Comments.Count == 0) return;
+        if (_result is null || DisplayComments.Count == 0) return;
         var shouldSelect = e.Value is bool b ? b : !AllVisibleSelected;
         if (shouldSelect)
         {
-            Analysis.SelectAll(_result.Comments);
+            Analysis.SelectAll(DisplayComments);
         }
         else
         {
-            foreach (var c in _result.Comments)
+            foreach (var c in DisplayComments)
             {
                 if (Analysis.IsSelected(c.Id)) Analysis.ToggleSelection(c);
             }
@@ -263,15 +305,34 @@
 
     protected override void OnInitialized()
     {
+        // Restore a cached fetch (and the user's filter/sort) so returning from a
+        // comment detail page doesn't force a re-fetch.
+        if (Browse.HasResult)
+        {
+            _result = Browse.LastResult;
+            _lastUrl = _result?.RequestedUrl;
+            _request = Browse.LastRequest ?? BuildDefaultRequest();
+            _filterText = Browse.FilterText;
+            _sortColumn = Browse.SortColumn;
+            _sortDescending = Browse.SortDescending;
+        }
+        else
+        {
+            _request = BuildDefaultRequest();
+        }
+    }
+
+    private FetchCommentsRequest BuildDefaultRequest()
+    {
         var settings = SettingsStore.Current;
-        _request = new FetchCommentsRequest
+        return new FetchCommentsRequest
         {
             DocumentId = string.IsNullOrWhiteSpace(settings.DefaultDocumentId)
                 ? "ED-2025-SCC-0481-0001"
                 : settings.DefaultDocumentId,
             PageSize = 25,
             Page = 1,
-            UseDocketFilter = false,
+            UseDocketFilter = true,
         };
     }
 
@@ -287,11 +348,17 @@
             if (!_result.Success)
             {
                 _error = _result.ErrorMessage;
+                Browse.LastResult = null;
             }
             else
             {
                 // A new fetch invalidates any prior selection (different docket / page / etc.).
                 Analysis.ClearSelection();
+                // Reset the filter/sort for the fresh result set, then cache it.
+                _filterText = string.Empty;
+                _sortColumn = CommentSortColumn.None;
+                _sortDescending = false;
+                SaveBrowseState();
             }
         }
         catch (Exception ex)
@@ -306,9 +373,13 @@
 
     private void ResetForm()
     {
-        OnInitialized();
+        _request = BuildDefaultRequest();
         _result = null;
         _error = null;
+        _filterText = string.Empty;
+        _sortColumn = CommentSortColumn.None;
+        _sortDescending = false;
+        Browse.Clear();
     }
 
     private async Task DownloadCsv()
@@ -354,8 +425,59 @@
 
     private void SelectAllVisible()
     {
-        if (_result is null) return;
-        Analysis.SelectAll(_result.Comments);
+        Analysis.SelectAll(DisplayComments);
+    }
+
+    private void SelectAllMatchingFilter()
+    {
+        Analysis.SelectAll(DisplayComments);
+    }
+
+    private void OnFilterInput(ChangeEventArgs e)
+    {
+        _filterText = e.Value?.ToString() ?? string.Empty;
+        Browse.FilterText = _filterText;
+    }
+
+    private void ClearFilter()
+    {
+        _filterText = string.Empty;
+        Browse.FilterText = string.Empty;
+    }
+
+    private void ToggleSort(CommentSortColumn column)
+    {
+        if (_sortColumn == column)
+        {
+            _sortDescending = !_sortDescending;
+        }
+        else
+        {
+            _sortColumn = column;
+            // Dates feel most useful newest-first; text columns A→Z first.
+            _sortDescending = column == CommentSortColumn.Posted;
+        }
+        Browse.SortColumn = _sortColumn;
+        Browse.SortDescending = _sortDescending;
+    }
+
+    private MarkupString SortIndicator(CommentSortColumn column)
+    {
+        if (_sortColumn != column) return new MarkupString("<span class=\"sort-indicator\">↕</span>");
+        return new MarkupString(_sortDescending
+            ? "<span class=\"sort-indicator\">▼</span>"
+            : "<span class=\"sort-indicator\">▲</span>");
+    }
+
+    private void SaveBrowseState()
+    {
+        if (_result is { Success: true })
+        {
+            Browse.Save(_request, _result);
+            Browse.FilterText = _filterText;
+            Browse.SortColumn = _sortColumn;
+            Browse.SortDescending = _sortDescending;
+        }
     }
 
     private void SelectNewest(int n)

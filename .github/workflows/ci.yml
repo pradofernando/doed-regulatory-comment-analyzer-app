@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feprado
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dotnet:
+    name: Build, test, and evaluate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore
+        run: dotnet restore dotnet_frontend.Tests/DoedRegulatoryComments.Web.Tests.csproj
+
+      - name: Build release
+        run: dotnet build dotnet_frontend.Tests/DoedRegulatoryComments.Web.Tests.csproj --configuration Release --no-restore
+
+      - name: Run deterministic AI evaluation
+        run: dotnet test dotnet_frontend.Tests/DoedRegulatoryComments.Web.Tests.csproj --configuration Release --no-build --filter Category=AiEvaluation --logger "trx;LogFileName=ai-evaluation.trx"
+
+      - name: Run tests
+        run: dotnet test dotnet_frontend.Tests/DoedRegulatoryComments.Web.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=tests.trx"
+
+      - name: Audit NuGet dependencies
+        shell: bash
+        run: |
+          dotnet list dotnet_frontend/DoedRegulatoryComments.Web.csproj package --vulnerable --include-transitive --format json > nuget-audit.json
+          cat nuget-audit.json
+          vulnerability_count=$(jq '[.projects[].frameworks[]? | ((.topLevelPackages // []) + (.transitivePackages // []))[]? | .vulnerabilities[]?] | length' nuget-audit.json)
+          if [ "$vulnerability_count" -ne 0 ]; then
+            echo "Found $vulnerability_count vulnerable NuGet package advisory entries."
+            exit 1
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: dotnet_frontend.Tests/TestResults/*.trx
+          if-no-files-found: warn
+
+  bicep:
+    name: Validate Bicep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compile Bicep
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            az bicep build --file dotnet_frontend/infra/main.bicep --outfile /tmp/main.json
+            az bicep build-params --file dotnet_frontend/infra/main.bicepparam --outfile /tmp/main.parameters.json

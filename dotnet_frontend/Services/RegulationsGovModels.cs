@@ -111,7 +111,7 @@ public class FileFormat
 public class FetchCommentsRequest
 {
     public string DocumentId { get; set; } = string.Empty;
-    public bool UseDocketFilter { get; set; }
+    public bool UseDocketFilter { get; set; } = true;
     public int PageSize { get; set; } = 25;
     public int Page { get; set; } = 1;
 }

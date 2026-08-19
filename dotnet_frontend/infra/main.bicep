@@ -8,7 +8,7 @@
 // What this deploys (resource group scope):
 //   - Log Analytics workspace
 //   - Application Insights (workspace-based)
-//   - Key Vault (RBAC mode) with secrets for API key, Foundry endpoint, agent IDs
+//   - Key Vault (RBAC mode) with secrets for the API key and Foundry endpoint
 //   - App Service Plan (Linux B1)
 //   - App Service (Linux, .NET 9) with system-assigned managed identity
 //   - Role assignment: App Service MI -> Key Vault Secrets User (on the KV)
@@ -70,6 +70,55 @@ param defaultDocumentId string = 'ED-2025-SCC-0481-0001'
 @maxValue(20)
 param batchSize int = 5
 
+@description('Analysis history backend. Sqlite is local/persistent App Service storage; AzureSql and Cosmos point to existing Azure resources.')
+@allowed([ 'Sqlite', 'AzureSql', 'Cosmos' ])
+param persistenceProvider string = 'Sqlite'
+
+@description('Azure SQL connection string. Prefer Authentication=Active Directory Default so the App Service managed identity is used.')
+@secure()
+param analysisDbConnectionString string = ''
+
+@description('Cosmos DB account endpoint used with the App Service managed identity.')
+param cosmosEndpoint string = ''
+
+@description('Cosmos DB database containing analysis-run documents.')
+param cosmosDatabaseName string = 'doed-regulatory-comments'
+
+@description('Cosmos DB container for analysis runs. Its partition key must be /id.')
+param cosmosContainerName string = 'analysis-runs'
+
+@description('Create the Cosmos database/container on startup. Leave false when infrastructure provisions them.')
+param cosmosCreateIfNotExists bool = false
+
+@description('Provision a serverless Cosmos account, database, aggregate container, and summary container in this template.')
+param provisionCosmosResources bool = false
+
+@description('Optional name for a provisioned Cosmos account. A globally unique name is generated when blank.')
+param cosmosAccountName string = ''
+
+@description('Cosmos summary container partitioned by normalized document ID.')
+param cosmosSummaryContainerName string = 'analysis-run-summaries'
+
+@description('Provision private Blob Storage for oversized analysis payloads.')
+param enablePayloadStorage bool = false
+
+@description('Offload raw categorization payloads to Blob Storage after this many UTF-8 bytes.')
+@minValue(65536)
+@maxValue(1572864)
+param payloadOffloadThresholdBytes int = 524288
+
+@description('Provision Azure AI Document Intelligence for scanned-PDF OCR.')
+param enableAttachmentOcr bool = false
+
+@description('Estimated Foundry input-token price in USD per million tokens. Used only for telemetry.')
+param foundryInputUsdPerMillionTokens string = '0'
+
+@description('Estimated Foundry output-token price in USD per million tokens. Used only for telemetry.')
+param foundryOutputUsdPerMillionTokens string = '0'
+
+@description('Optional operations email address for Azure Monitor alert notifications.')
+param alertEmail string = ''
+
 @description('Tags applied to every resource.')
 param tags object = {
   workload: 'doed-regulatory-comments-web'
@@ -82,6 +131,12 @@ var appInsightsName = '${baseName}-appi-${uniqueSuffix}'
 var keyVaultName = take('${baseName}kv${uniqueSuffix}', 24)
 var planName = '${baseName}-plan-${uniqueSuffix}'
 var appName = '${baseName}-app-${uniqueSuffix}'
+var payloadStorageName = take('${replace(baseName, '-', '')}pay${uniqueSuffix}', 24)
+var payloadContainerName = 'analysis-run-payloads'
+var documentIntelligenceName = take('${baseName}-ocr-${uniqueSuffix}', 64)
+var provisionedCosmosAccountName = empty(cosmosAccountName)
+  ? take('${replace(baseName, '-', '')}cosmos${uniqueSuffix}', 44)
+  : cosmosAccountName
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: logAnalyticsName
@@ -176,7 +231,252 @@ resource webApp 'Microsoft.Web/sites@2024-04-01' = {
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       http20Enabled: true
+      healthCheckPath: '/health/ready'
     }
+  }
+}
+
+resource payloadStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (enablePayloadStorage) {
+  name: payloadStorageName
+  location: location
+  tags: tags
+  kind: 'StorageV2'
+  sku: {
+    name: 'Standard_LRS'
+  }
+  properties: {
+    accessTier: 'Hot'
+    allowBlobPublicAccess: false
+    allowCrossTenantReplication: false
+    allowSharedKeyAccess: false
+    defaultToOAuthAuthentication: true
+    minimumTlsVersion: 'TLS1_2'
+    publicNetworkAccess: 'Enabled'
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+resource payloadBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = if (enablePayloadStorage) {
+  parent: payloadStorage
+  name: 'default'
+  properties: {
+    containerDeleteRetentionPolicy: {
+      enabled: true
+      days: 7
+    }
+    deleteRetentionPolicy: {
+      enabled: true
+      days: 7
+    }
+  }
+}
+
+resource payloadContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (enablePayloadStorage) {
+  parent: payloadBlobService
+  name: payloadContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+
+resource payloadStorageRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enablePayloadStorage) {
+  scope: payloadStorage
+  name: guid(payloadStorage.id, webApp.id, storageBlobDataContributorRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
+    principalId: webApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2024-10-01' = if (enableAttachmentOcr) {
+  name: documentIntelligenceName
+  location: location
+  tags: tags
+  kind: 'FormRecognizer'
+  sku: {
+    name: 'S0'
+  }
+  properties: {
+    customSubDomainName: documentIntelligenceName
+    disableLocalAuth: true
+    networkAcls: {
+      bypass: 'AzureServices'
+      defaultAction: 'Allow'
+      ipRules: []
+      virtualNetworkRules: []
+    }
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+var cognitiveServicesDataReaderRoleId = 'b59867f0-fa02-499b-be73-45a86b5b3e1c'
+
+resource documentIntelligenceRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableAttachmentOcr) {
+  scope: documentIntelligence
+  name: guid(documentIntelligence.id, webApp.id, cognitiveServicesDataReaderRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesDataReaderRoleId)
+    principalId: webApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = if (provisionCosmosResources) {
+  name: provisionedCosmosAccountName
+  location: location
+  tags: tags
+  kind: 'GlobalDocumentDB'
+  properties: {
+    capabilities: [
+      {
+        name: 'EnableServerless'
+      }
+    ]
+    consistencyPolicy: {
+      defaultConsistencyLevel: 'Session'
+    }
+    databaseAccountOfferType: 'Standard'
+    disableLocalAuth: true
+    locations: [
+      {
+        failoverPriority: 0
+        isZoneRedundant: false
+        locationName: location
+      }
+    ]
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource cosmosDatabase 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-05-15' = if (provisionCosmosResources) {
+  parent: cosmosAccount
+  name: cosmosDatabaseName
+  properties: {
+    options: {}
+    resource: {
+      id: cosmosDatabaseName
+    }
+  }
+}
+
+resource cosmosRunContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = if (provisionCosmosResources) {
+  parent: cosmosDatabase
+  name: cosmosContainerName
+  properties: {
+    options: {}
+    resource: {
+      id: cosmosContainerName
+      indexingPolicy: {
+        automatic: true
+        excludedPaths: [
+          {
+            path: '/categorizations/[]/rawResponse/?'
+          }
+          {
+            path: '/categorizations/[]/parsedJson/?'
+          }
+          {
+            path: '/followUpHistory/[]/text/?'
+          }
+        ]
+        includedPaths: [
+          {
+            path: '/*'
+          }
+        ]
+        indexingMode: 'consistent'
+      }
+      partitionKey: {
+        kind: 'Hash'
+        paths: [
+          '/id'
+        ]
+        version: 2
+      }
+    }
+  }
+}
+
+resource cosmosSummaryContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = if (provisionCosmosResources) {
+  parent: cosmosDatabase
+  name: cosmosSummaryContainerName
+  properties: {
+    options: {}
+    resource: {
+      id: cosmosSummaryContainerName
+      indexingPolicy: {
+        automatic: true
+        compositeIndexes: [
+          [
+            {
+              path: '/type'
+              order: 'ascending'
+            }
+            {
+              path: '/startedAt'
+              order: 'descending'
+            }
+          ]
+          [
+            {
+              path: '/type'
+              order: 'ascending'
+            }
+            {
+              path: '/succeeded'
+              order: 'ascending'
+            }
+            {
+              path: '/startedAt'
+              order: 'descending'
+            }
+          ]
+        ]
+        excludedPaths: [
+          {
+            path: '/*'
+          }
+        ]
+        includedPaths: [
+          {
+            path: '/id/?'
+          }
+          {
+            path: '/type/?'
+          }
+          {
+            path: '/documentIdNormalized/?'
+          }
+          {
+            path: '/startedAt/?'
+          }
+          {
+            path: '/succeeded/?'
+          }
+        ]
+        indexingMode: 'consistent'
+      }
+      partitionKey: {
+        kind: 'Hash'
+        paths: [
+          '/documentIdNormalized'
+        ]
+        version: 2
+      }
+    }
+  }
+}
+
+resource cosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (provisionCosmosResources) {
+  parent: cosmosAccount
+  name: guid(cosmosAccount.id, webApp.id, 'cosmos-data-contributor')
+  properties: {
+    principalId: webApp.identity.principalId
+    roleDefinitionId: '${cosmosAccount.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
+    scope: cosmosAccount.id
   }
 }
 
@@ -199,16 +499,47 @@ resource kvSecretsUserRoleAssignment 'Microsoft.Authorization/roleAssignments@20
 var kvRefRegsApiKey = '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=${secretRegsApiKey.name})'
 var kvRefFoundryEndpoint = '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=${secretFoundryEndpoint.name})'
 
-// SQLite persistence lives under /home which is the App Service Linux persistent mount.
+// SQLite persistence lives under /home, the App Service Linux persistent mount.
 var sqliteConnectionString = 'Data Source=/home/data/analysis.db'
+var effectiveCosmosEndpoint = provisionCosmosResources
+  ? (cosmosAccount.?properties.?documentEndpoint ?? cosmosEndpoint)
+  : cosmosEndpoint
+var payloadContainerUri = enablePayloadStorage
+  ? 'https://${payloadStorage.name}.blob.${environment().suffixes.storage}/${payloadContainerName}'
+  : ''
+var documentIntelligenceEndpoint = enableAttachmentOcr
+  ? (documentIntelligence.?properties.?endpoint ?? '')
+  : ''
 
 resource webAppSettings 'Microsoft.Web/sites/config@2024-04-01' = {
   parent: webApp
   name: 'appsettings'
   properties: {
     APPLICATIONINSIGHTS_CONNECTION_STRING: appInsights.properties.ConnectionString
-    ApplicationInsightsAgent_EXTENSION_VERSION: '~3'
-    ConnectionStrings__AnalysisDb: sqliteConnectionString
+    WEBSITE_HEALTHCHECK_MAXPINGFAILURES: '5'
+    Persistence__Provider: persistenceProvider
+    ConnectionStrings__AnalysisDb: persistenceProvider == 'Sqlite' ? sqliteConnectionString : analysisDbConnectionString
+    Persistence__Cosmos__Endpoint: effectiveCosmosEndpoint
+    Persistence__Cosmos__DatabaseName: cosmosDatabaseName
+    Persistence__Cosmos__ContainerName: cosmosContainerName
+    Persistence__Cosmos__SummaryContainerName: cosmosSummaryContainerName
+    Persistence__Cosmos__CreateIfNotExists: string(cosmosCreateIfNotExists)
+    Persistence__Payloads__BlobContainerUri: payloadContainerUri
+    Persistence__Payloads__ContainerName: payloadContainerName
+    Persistence__Payloads__OffloadThresholdBytes: string(payloadOffloadThresholdBytes)
+    Persistence__Payloads__CreateIfNotExists: 'false'
+    Attachments__AllowedHosts__0: 'downloads.regulations.gov'
+    Attachments__MaxDownloadBytes: '26214400'
+    Attachments__MaxRedirects: '3'
+    Attachments__MaxArchiveEntries: '1000'
+    Attachments__MaxArchiveUncompressedBytes: '104857600'
+    Attachments__MaxExtractedTextCharacters: '500000'
+    Attachments__MaxPdfPages: '100'
+    Attachments__MaxOcrPages: '50'
+    Attachments__MinPdfTextCharactersPerPage: '20'
+    Attachments__OcrEndpoint: documentIntelligenceEndpoint
+    Telemetry__FoundryCost__InputUsdPerMillionTokens: foundryInputUsdPerMillionTokens
+    Telemetry__FoundryCost__OutputUsdPerMillionTokens: foundryOutputUsdPerMillionTokens
     Api__BaseUrl: 'https://api.regulations.gov/v4'
     Api__ApiKey: kvRefRegsApiKey
     Api__DefaultDocumentId: defaultDocumentId
@@ -224,7 +555,107 @@ resource webAppSettings 'Microsoft.Web/sites/config@2024-04-01' = {
   }
   dependsOn: [
     kvSecretsUserRoleAssignment
+    payloadStorageRoleAssignment
+    documentIntelligenceRoleAssignment
+    cosmosDataContributor
+    cosmosRunContainer
+    cosmosSummaryContainer
   ]
+}
+
+resource alertActionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(alertEmail)) {
+  name: '${baseName}-operations'
+  location: 'global'
+  tags: tags
+  properties: {
+    emailReceivers: [
+      {
+        emailAddress: alertEmail
+        name: 'Operations'
+        useCommonAlertSchema: true
+      }
+    ]
+    enabled: true
+    groupShortName: take(replace(baseName, '-', ''), 12)
+  }
+}
+
+var alertActions = empty(alertEmail) ? [] : [
+  {
+    actionGroupId: alertActionGroup.id
+  }
+]
+
+resource http5xxAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+  name: '${baseName}-http-5xx'
+  location: 'global'
+  tags: tags
+  properties: {
+    actions: alertActions
+    autoMitigate: true
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          criterionType: 'StaticThresholdCriterion'
+          dimensions: []
+          metricName: 'Http5xx'
+          metricNamespace: 'Microsoft.Web/sites'
+          name: 'Http5xx'
+          operator: 'GreaterThan'
+          skipMetricValidation: false
+          threshold: 0
+          timeAggregation: 'Total'
+        }
+      ]
+    }
+    description: 'The web app returned one or more HTTP 5xx responses in five minutes.'
+    enabled: true
+    evaluationFrequency: 'PT1M'
+    scopes: [
+      webApp.id
+    ]
+    severity: 2
+    targetResourceRegion: location
+    targetResourceType: 'Microsoft.Web/sites'
+    windowSize: 'PT5M'
+  }
+}
+
+resource responseTimeAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+  name: '${baseName}-response-time'
+  location: 'global'
+  tags: tags
+  properties: {
+    actions: alertActions
+    autoMitigate: true
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          criterionType: 'StaticThresholdCriterion'
+          dimensions: []
+          metricName: 'AverageResponseTime'
+          metricNamespace: 'Microsoft.Web/sites'
+          name: 'AverageResponseTime'
+          operator: 'GreaterThan'
+          skipMetricValidation: false
+          threshold: 5
+          timeAggregation: 'Average'
+        }
+      ]
+    }
+    description: 'The web app average response time exceeded five seconds.'
+    enabled: true
+    evaluationFrequency: 'PT5M'
+    scopes: [
+      webApp.id
+    ]
+    severity: 3
+    targetResourceRegion: location
+    targetResourceType: 'Microsoft.Web/sites'
+    windowSize: 'PT15M'
+  }
 }
 
 output webAppName string = webApp.name
@@ -233,6 +664,15 @@ output webAppUrl string = 'https://${webApp.properties.defaultHostName}'
 output webAppPrincipalId string = webApp.identity.principalId
 output keyVaultName string = keyVault.name
 output applicationInsightsConnectionString string = appInsights.properties.ConnectionString
+output persistenceProvider string = persistenceProvider
+output livenessUrl string = 'https://${webApp.properties.defaultHostName}/health/live'
+output readinessUrl string = 'https://${webApp.properties.defaultHostName}/health/ready'
+output documentIntelligenceEndpoint string = documentIntelligenceEndpoint
+output payloadContainerUri string = payloadContainerUri
+output effectiveCosmosEndpoint string = effectiveCosmosEndpoint
 
 @description('Run this command once after the first deployment to grant the web app permission to call the Azure AI Foundry agents. Replace <FOUNDRY-PROJECT-RESOURCE-ID> with the full ARM ID of the existing Foundry project, e.g. /subscriptions/.../resourceGroups/rg-doed-comments/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>.')
 output foundryRoleAssignmentCommand string = 'az role assignment create --assignee-object-id ${webApp.identity.principalId} --assignee-principal-type ServicePrincipal --role "Azure AI User" --scope <FOUNDRY-PROJECT-RESOURCE-ID>'
+
+@description('For Cosmos persistence, grant this principal the Cosmos DB Built-in Data Contributor role on the target account. The container partition key must be /id.')
+output cosmosPrincipalId string = persistenceProvider == 'Cosmos' ? webApp.identity.principalId : ''

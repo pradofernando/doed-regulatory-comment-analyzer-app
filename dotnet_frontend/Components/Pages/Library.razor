@@ -1,7 +1,7 @@
 @page "/library"
 @rendermode InteractiveServer
 @using System.Text
-@inject AnalysisRepository Repo
+@inject IAnalysisRepository Repo
 @inject AnalysisStore Store
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
@@ -12,16 +12,16 @@
     <span class="section-eyebrow">History</span>
     <h1 class="page-header__title">Saved Analysis Runs</h1>
     <p class="page-header__meta">
-        Every analysis run is persisted automatically — open any past run to view its themes,
-        re-export the report, or resume the follow-up chat.
+        Every analysis run is persisted automatically. Give runs memorable names, search for them,
+        reopen their themes, or resume the follow-up chat.
     </p>
 </header>
 
 <section class="surface-card mb-3">
     <div class="library-filters">
         <div class="library-filters__field">
-            <label class="form-label small mb-1">Document ID contains</label>
-            <input class="form-control form-control-sm" @bind="_docFilter" @bind:event="oninput" placeholder="e.g. ED-2025-OCR" />
+            <label class="form-label small mb-1" for="librarySearch">Session name or document ID</label>
+            <input id="librarySearch" class="form-control form-control-sm" @bind="_searchFilter" @bind:event="oninput" placeholder="e.g. IDEA oversight" />
         </div>
         <div class="library-filters__field library-filters__field--check">
             <div class="form-check">
@@ -57,6 +57,7 @@ else
             <table class="table table-sm table-hover align-middle mb-0 library-table">
                 <thead>
                     <tr>
+                        <th>Name</th>
                         <th>Started</th>
                         <th>Document</th>
                         <th class="text-end">Comments</th>
@@ -70,6 +71,25 @@ else
                     @foreach (var r in Filtered)
                     {
                         <tr class="library-row" @onclick="() => OpenRun(r.Id)" style="cursor:pointer">
+                            <td class="library-session-name" @onclick:stopPropagation>
+                                @if (_editingId == r.Id)
+                                {
+                                    <form class="session-name-editor" @onsubmit="() => SaveName(r)" @onsubmit:preventDefault>
+                                        <input class="form-control form-control-sm" aria-label="Session name"
+                                               maxlength="@AnalysisSessionNames.MaxLength" @bind="_editName" @bind:event="oninput" />
+                                        <div class="session-name-editor__actions">
+                                            <button class="btn btn-sm btn-primary" type="submit" disabled="@(_busyId == r.Id)">Save</button>
+                                            <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="CancelRename">Cancel</button>
+                                        </div>
+                                    </form>
+                                }
+                                else
+                                {
+                                    <span class="@(string.IsNullOrWhiteSpace(r.SessionName) ? "session-name session-name--untitled" : "session-name")">
+                                        @(string.IsNullOrWhiteSpace(r.SessionName) ? "Untitled analysis" : r.SessionName)
+                                    </span>
+                                }
+                            </td>
                             <td class="text-nowrap">
                                 <div>@r.StartedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</div>
                                 @if (r.CompletedAt is { } done)
@@ -98,6 +118,11 @@ else
                                         disabled="@(_busyId == r.Id)">
                                     Open
                                 </button>
+                                <button class="btn btn-sm btn-outline-secondary me-1"
+                                        @onclick="() => BeginRename(r)"
+                                        disabled="@(_busyId == r.Id)">
+                                    Rename
+                                </button>
                                 <button class="btn btn-sm btn-outline-danger"
                                         @onclick="() => DeleteRun(r.Id)"
                                         disabled="@(_busyId == r.Id)"
@@ -110,21 +135,34 @@ else
                 </tbody>
             </table>
         </div>
+        @if (!string.IsNullOrWhiteSpace(_continuationToken))
+        {
+            <div class="d-flex justify-content-center border-top pt-3 mt-3">
+                <button class="btn btn-sm btn-outline-primary" @onclick="LoadMore" disabled="@_loadingMore">
+                    @(_loadingMore ? "Loading…" : "Load more")
+                </button>
+            </div>
+        }
     </section>
 }
 
 @code {
-    private List<AnalysisRepository.RunSummary> _runs = new();
+    private List<AnalysisRunSummary> _runs = new();
     private bool _loading = true;
+    private bool _loadingMore;
+    private string? _continuationToken;
     private string? _error;
-    private string _docFilter = string.Empty;
+    private string _searchFilter = string.Empty;
     private bool _successOnly;
     private Guid? _busyId;
+    private Guid? _editingId;
+    private string _editName = string.Empty;
 
-    private List<AnalysisRepository.RunSummary> Filtered =>
+    private List<AnalysisRunSummary> Filtered =>
         _runs
-            .Where(r => string.IsNullOrWhiteSpace(_docFilter)
-                        || r.DocumentId.Contains(_docFilter, StringComparison.OrdinalIgnoreCase))
+            .Where(r => string.IsNullOrWhiteSpace(_searchFilter)
+                        || r.DocumentId.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase)
+                        || (r.SessionName?.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ?? false))
             .Where(r => !_successOnly || r.Succeeded)
             .ToList();
 
@@ -139,9 +177,9 @@ else
         _error = null;
         try
         {
-            // Pull a generous slice; filtering happens client-side so toggles stay snappy.
-            var list = await Repo.ListAsync(new AnalysisRepository.ListFilter(Take: 200));
-            _runs = list.ToList();
+            var page = await Repo.ListPageAsync(new AnalysisListFilter(Take: 50));
+            _runs = page.Items.ToList();
+            _continuationToken = page.ContinuationToken;
         }
         catch (Exception ex)
         {
@@ -150,6 +188,29 @@ else
         finally
         {
             _loading = false;
+        }
+    }
+
+    private async Task LoadMore()
+    {
+        if (_loadingMore || string.IsNullOrWhiteSpace(_continuationToken)) return;
+        _loadingMore = true;
+        _error = null;
+        try
+        {
+            var page = await Repo.ListPageAsync(
+                new AnalysisListFilter(Take: 50),
+                _continuationToken);
+            _runs.AddRange(page.Items.Where(item => _runs.All(existing => existing.Id != item.Id)));
+            _continuationToken = page.ContinuationToken;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loadingMore = false;
         }
     }
 
@@ -189,6 +250,43 @@ else
             // If the deleted run is the one currently loaded, clear the in-memory pointer
             // so the Analysis page doesn't try to persist new chat turns against a dead row.
             if (Store.LoadedRunId == id) Store.LoadedRunId = null;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busyId = null;
+        }
+    }
+
+    private void BeginRename(AnalysisRunSummary run)
+    {
+        _error = null;
+        _editingId = run.Id;
+        _editName = run.SessionName ?? string.Empty;
+    }
+
+    private void CancelRename()
+    {
+        _editingId = null;
+        _editName = string.Empty;
+    }
+
+    private async Task SaveName(AnalysisRunSummary run)
+    {
+        _busyId = run.Id;
+        _error = null;
+        try
+        {
+            var normalized = AnalysisSessionNames.Normalize(_editName);
+            await Repo.RenameRunAsync(run.Id, normalized);
+            var index = _runs.FindIndex(item => item.Id == run.Id);
+            if (index >= 0) _runs[index] = _runs[index] with { SessionName = normalized };
+            if (Store.LoadedRunId == run.Id && Store.LastRun is not null)
+                Store.LastRun.SessionName = normalized;
+            CancelRename();
         }
         catch (Exception ex)
         {

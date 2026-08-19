@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "description": "Synthetic, non-production fixtures for deterministic regulatory-comment response contract evaluation.",
+  "categorizationCases": [
+    {
+      "name": "valid supportive individual",
+      "expectedValid": true,
+      "response": "{\"primary_topic\":\"Reporting burden\",\"sentiment\":\"supportive\",\"stance\":\"Supports clearer reporting requirements\",\"key_concerns\":[\"Implementation guidance\"],\"commenter_type\":\"individual\"}"
+    },
+    {
+      "name": "valid fenced organization",
+      "expectedValid": true,
+      "response": "```json\n{\"primary_topic\":\"Compliance timeline\",\"sentiment\":\"mixed\",\"stance\":\"Supports the goal but requests more time\",\"key_concerns\":[\"Staff training\",\"Transition costs\"],\"commenter_type\":\"organization\"}\n```"
+    },
+    {
+      "name": "invalid sentiment vocabulary",
+      "expectedValid": false,
+      "response": "{\"primary_topic\":\"Funding\",\"sentiment\":\"positive\",\"stance\":\"Supports funding\",\"key_concerns\":[\"Adequacy\"],\"commenter_type\":\"individual\"}"
+    },
+    {
+      "name": "missing required fields",
+      "expectedValid": false,
+      "response": "{\"primary_topic\":\"Accessibility\",\"sentiment\":\"neutral\"}"
+    }
+  ],
+  "groupingCases": [
+    {
+      "name": "valid complete grouping",
+      "totalComments": 3,
+      "expectedValid": true,
+      "response": "{\"overall_summary\":\"Commenters discuss implementation timing and reporting clarity.\",\"theme_groups\":[{\"group_name\":\"Implementation\",\"group_description\":\"Requests about rollout timing.\",\"count\":2,\"submission_numbers\":[1,3],\"stance_distribution\":{\"support\":1,\"oppose\":0,\"neutral\":0,\"mixed\":1},\"common_arguments\":[\"More transition time\"]},{\"group_name\":\"Reporting\",\"group_description\":\"Requests for clearer reporting instructions.\",\"count\":1,\"submission_numbers\":[2],\"stance_distribution\":{\"support\":0,\"oppose\":0,\"neutral\":1,\"mixed\":0},\"common_arguments\":[\"Publish examples\"]}],\"patterns\":[\"Implementation detail matters\"],\"recommendations\":[\"Publish phased guidance\"],\"overall_sentiment\":\"mixed\"}"
+    },
+    {
+      "name": "duplicate and missing submission",
+      "totalComments": 3,
+      "expectedValid": false,
+      "response": "{\"overall_summary\":\"Incomplete grouping.\",\"theme_groups\":[{\"group_name\":\"Implementation\",\"group_description\":\"Timing concerns.\",\"count\":2,\"submission_numbers\":[1,1],\"stance_distribution\":{\"support\":2},\"common_arguments\":[]}],\"patterns\":[],\"recommendations\":[],\"overall_sentiment\":\"supportive\"}"
+    },
+    {
+      "name": "inconsistent group and stance counts",
+      "totalComments": 1,
+      "expectedValid": false,
+      "response": "{\"overall_summary\":\"Count mismatch.\",\"theme_groups\":[{\"group_name\":\"Funding\",\"group_description\":\"Funding concerns.\",\"count\":2,\"submission_numbers\":[1],\"stance_distribution\":{\"support\":1},\"common_arguments\":[]}],\"patterns\":[],\"recommendations\":[],\"overall_sentiment\":\"mixed\"}"
+    }
+  ]
+}

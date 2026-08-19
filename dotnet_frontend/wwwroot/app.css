@@ -11,6 +11,10 @@
     --color-primary-hover: #1a40b6;
     --color-primary-soft: #eef2ff;
     --color-accent: #0d9488;
+    --chat-user-bg: #eff6ff;
+    --chat-user-border: #bfdbfe;
+    --chat-agent-bg: #f8fafc;
+    --chat-agent-border: #dbe3ee;
     --color-danger: #b91c1c;
     --color-warning: #b45309;
     --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
@@ -33,6 +37,10 @@
     --color-primary-hover: #3b82f6;
     --color-primary-soft: rgba(96, 165, 250, 0.15);
     --color-accent: #2dd4bf;
+    --chat-user-bg: #172f52;
+    --chat-user-border: #315985;
+    --chat-agent-bg: #253149;
+    --chat-agent-border: #3b4a69;
     --color-danger: #f87171;
     --color-warning: #fbbf24;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
@@ -162,7 +170,15 @@ a:hover, .btn-link:hover {
 
 /* ---------- Tables ---------- */
 .table {
+    --bs-table-color: var(--color-text);
     --bs-table-bg: var(--color-surface);
+    --bs-table-border-color: var(--color-border);
+    --bs-table-striped-color: var(--color-text);
+    --bs-table-striped-bg: var(--color-surface-muted);
+    --bs-table-active-color: var(--color-text);
+    --bs-table-active-bg: var(--color-surface-muted);
+    --bs-table-hover-color: var(--color-text);
+    --bs-table-hover-bg: rgba(31, 78, 216, 0.04);
     color: var(--color-text);
     border-color: var(--color-border);
 }
@@ -319,6 +335,11 @@ h1:focus { outline: none; }
 .library-table tbody td { vertical-align: middle; }
 .library-table-card { padding: 0.25rem; }
 .library-table-card .table { margin-bottom: 0; }
+.library-session-name { min-width: 220px; max-width: 320px; }
+.session-name { display: block; overflow-wrap: anywhere; font-weight: 600; color: var(--color-text); }
+.session-name--untitled { color: var(--color-text-muted); font-style: italic; font-weight: 400; }
+.session-name-editor { display: grid; gap: 0.4rem; min-width: 210px; }
+.session-name-editor__actions { display: flex; gap: 0.35rem; }
 
 .library-row:hover { background-color: rgba(0,123,255,0.04); }
 .library-load-banner {
@@ -369,8 +390,8 @@ h1:focus { outline: none; }
     color: #fde68a !important;
 }
 
-[data-theme="dark"] .table tbody tr:hover {
-    background-color: rgba(96, 165, 250, 0.07);
+[data-theme="dark"] .table {
+    --bs-table-hover-bg: rgba(96, 165, 250, 0.08);
 }
 
 [data-theme="dark"] .library-row:hover {

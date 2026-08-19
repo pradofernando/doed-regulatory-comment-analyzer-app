@@ -1,12 +1,23 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Azure.Core;
 using Azure.Identity;
 
 namespace DoedRegulatoryComments.Web.Services;
+
+public interface IAnalysisRunner
+{
+    Task<AnalysisRun> RunAsync(
+        string documentId,
+        IReadOnlyList<CommentResource> comments,
+        ApiSettings settings,
+        IProgress<AnalysisProgress>? progress,
+        CancellationToken cancellationToken);
+}
 
 /// <summary>
 /// Mirrors the Python function-app workflow: Agent 1 categorizes each comment, Agent 2 groups them
@@ -17,14 +28,16 @@ namespace DoedRegulatoryComments.Web.Services;
 /// field. There are no asst_… IDs and no threads — multi-turn state is maintained server-side
 /// using <c>previous_response_id</c>.
 /// </summary>
-public sealed class FoundryAnalysisService
+public sealed class FoundryAnalysisService : IAnalysisRunner
 {
     private readonly ILogger<FoundryAnalysisService> _logger;
     private readonly AttachmentExtractor _attachments;
     private readonly IHttpClientFactory _httpFactory;
+    private readonly OperationalTelemetry _telemetry;
+    private readonly TokenCredential _credential;
 
-    // Foundry uses Azure Cognitive Services token audience.
-    private static readonly string[] FoundryScopes = new[] { "https://cognitiveservices.azure.com/.default" };
+    // New Foundry project APIs use the Microsoft Foundry token audience.
+    private static readonly string[] FoundryScopes = new[] { "https://ai.azure.com/.default" };
 
     private static readonly JsonSerializerOptions ParseOpts = new()
     {
@@ -36,11 +49,15 @@ public sealed class FoundryAnalysisService
     public FoundryAnalysisService(
         ILogger<FoundryAnalysisService> logger,
         AttachmentExtractor attachments,
-        IHttpClientFactory httpFactory)
+        IHttpClientFactory httpFactory,
+        OperationalTelemetry telemetry,
+        TokenCredential credential)
     {
         _logger = logger;
         _attachments = attachments;
         _httpFactory = httpFactory;
+        _telemetry = telemetry;
+        _credential = credential;
     }
 
     public async Task<AnalysisRun> RunAsync(
@@ -114,7 +131,11 @@ public sealed class FoundryAnalysisService
                 }
             }
 
-            using var foundry = new FoundryResponsesClient(_httpFactory.CreateClient("foundry"), settings.FoundryEndpoint, new DefaultAzureCredential());
+            using var foundry = new FoundryResponsesClient(
+                _httpFactory.CreateClient("foundry"),
+                settings.FoundryEndpoint,
+                _credential,
+                _telemetry);
 
             // PHASE 3 — Per-comment categorization (each call is independent, no chaining).
             progress?.Report(new AnalysisProgress { Phase = "Categorizing", Current = 0, Total = comments.Count, Message = "Connecting to categorization agent…" });
@@ -135,10 +156,21 @@ public sealed class FoundryAnalysisService
                 });
 
                 var (rowString, textSource, attCount) = BuildRowString(submissionNumber, c, attachExt);
+                var categorizationPrompt = string.Concat(
+                    rowString,
+                    "\n\nReturn only one JSON object with exactly these keys and no Markdown:\n",
+                    "{\n",
+                    "  \"primary_topic\": \"<short topic/category>\",\n",
+                    "  \"sentiment\": \"<supportive, opposed, neutral, or mixed>\",\n",
+                    "  \"stance\": \"<short description of the commenter's position>\",\n",
+                    "  \"key_concerns\": [\"<concern or argument>\", \"<additional concern or argument>\"],\n",
+                    "  \"commenter_type\": \"<individual or organization>\"\n",
+                    "}");
                 var (rawResponse, _) = await foundry.CreateResponseAsync(
+                    operationName: "categorization",
                     settings.CategorizationAgentName,
                     settings.CategorizationAgentVersion,
-                    rowString,
+                    categorizationPrompt,
                     previousResponseId: null,
                     cancellationToken,
                     _logger).ConfigureAwait(false);
@@ -220,6 +252,7 @@ public sealed class FoundryAnalysisService
                     : "\nAcknowledge receipt. More batches coming...");
 
                 var (batchResponse, newResponseId) = await foundry.CreateResponseAsync(
+                    operationName: "grouping",
                     settings.GroupingAgentName,
                     settings.GroupingAgentVersion,
                     sb.ToString(),
@@ -241,8 +274,7 @@ public sealed class FoundryAnalysisService
         }
         catch (OperationCanceledException)
         {
-            run.Succeeded = false;
-            run.ErrorMessage = "Analysis was cancelled.";
+            throw;
         }
         catch (Exception ex)
         {
@@ -281,10 +313,15 @@ public sealed class FoundryAnalysisService
         if (run is null) throw new ArgumentNullException(nameof(run));
         if (!run.Succeeded) throw new InvalidOperationException("Cannot start follow-up chat on an unsuccessful run.");
 
-        using var foundry = new FoundryResponsesClient(_httpFactory.CreateClient("foundry"), settings.FoundryEndpoint, new DefaultAzureCredential());
+        using var foundry = new FoundryResponsesClient(
+            _httpFactory.CreateClient("foundry"),
+            settings.FoundryEndpoint,
+            _credential,
+            _telemetry);
 
         var priming = BuildFollowUpPriming(run);
         var (_, responseId) = await foundry.CreateResponseAsync(
+            operationName: "followup-prime",
             settings.FollowUpAgentName,
             settings.FollowUpAgentVersion,
             priming,
@@ -312,10 +349,15 @@ public sealed class FoundryAnalysisService
             throw new InvalidOperationException("Follow-up conversation has not been started. Call StartFollowUpThreadAsync first.");
         if (string.IsNullOrWhiteSpace(question)) throw new ArgumentException("Question cannot be empty.", nameof(question));
 
-        using var foundry = new FoundryResponsesClient(_httpFactory.CreateClient("foundry"), settings.FoundryEndpoint, new DefaultAzureCredential());
+        using var foundry = new FoundryResponsesClient(
+            _httpFactory.CreateClient("foundry"),
+            settings.FoundryEndpoint,
+            _credential,
+            _telemetry);
 
         run.FollowUpHistory.Add(new FollowUpTurn("user", question.Trim(), DateTimeOffset.UtcNow));
         var (reply, newResponseId) = await foundry.CreateResponseAsync(
+            operationName: "followup-question",
             settings.FollowUpAgentName,
             settings.FollowUpAgentVersion,
             question.Trim(),
@@ -387,6 +429,7 @@ public sealed class FoundryAnalysisService
 
         var attachTextRaw = attachExt?.CombinedText ?? string.Empty;
         var attCount = attachExt?.Attachments.Count(x => x.Extracted) ?? 0;
+        var usedOcr = attachExt?.Attachments.Any(x => x.UsedOcr) is true;
 
         var inlineLooksLikePointer = !string.IsNullOrWhiteSpace(inline)
             && inline.Length < 60
@@ -402,9 +445,9 @@ public sealed class FoundryAnalysisService
 
         var source = (keepInline, attachTextRaw.Length > 0) switch
         {
-            (true, true)  => "inline+attachment",
+            (true, true)  => usedOcr ? "inline+attachment-ocr" : "inline+attachment",
             (true, false) => "inline",
-            (false, true) => "attachment",
+            (false, true) => usedOcr ? "attachment-ocr" : "attachment",
             _ => "none",
         };
 
@@ -568,22 +611,29 @@ public sealed class FoundryAnalysisService
     // POSTs to {endpoint}/openai/v1/responses, and threads an "agent_reference" extra field
     // into the body so the new prompt-agent platform handles routing/instructions.
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    private sealed class FoundryResponsesClient : IDisposable
+    internal sealed class FoundryResponsesClient : IDisposable
     {
         private readonly HttpClient _http;
         private readonly TokenCredential _credential;
         private readonly Uri _responsesUri;
+        private readonly OperationalTelemetry _telemetry;
         private AccessToken _cachedToken;
 
-        public FoundryResponsesClient(HttpClient http, string endpoint, TokenCredential credential)
+        public FoundryResponsesClient(
+            HttpClient http,
+            string endpoint,
+            TokenCredential credential,
+            OperationalTelemetry telemetry)
         {
             _http = http;
             _credential = credential;
+            _telemetry = telemetry;
             var trimmed = (endpoint ?? string.Empty).TrimEnd('/');
             _responsesUri = new Uri($"{trimmed}/openai/v1/responses");
         }
 
         public async Task<(string Text, string ResponseId)> CreateResponseAsync(
+            string operationName,
             string agentName,
             string agentVersion,
             string userText,
@@ -592,69 +642,92 @@ public sealed class FoundryAnalysisService
             ILogger logger)
         {
             const int maxAttempts = 5;
-            for (var attempt = 1; ; attempt++)
+            var stopwatch = Stopwatch.StartNew();
+            try
             {
-                var body = new Dictionary<string, object?>
+                for (var attempt = 1; ; attempt++)
                 {
-                    ["input"] = new[]
+                    var body = new Dictionary<string, object?>
                     {
-                        new Dictionary<string, object?>
+                        ["input"] = new[]
                         {
-                            ["role"] = "user",
-                            ["content"] = userText,
+                            new Dictionary<string, object?>
+                            {
+                                ["role"] = "user",
+                                ["content"] = userText,
+                            }
+                        },
+                        ["agent_reference"] = new Dictionary<string, object?>
+                        {
+                            ["name"] = agentName,
+                            ["version"] = string.IsNullOrWhiteSpace(agentVersion) ? "latest" : agentVersion,
+                            ["type"] = "agent_reference",
+                        },
+                    };
+                    if (!string.IsNullOrWhiteSpace(previousResponseId))
+                    {
+                        body["previous_response_id"] = previousResponseId;
+                    }
+
+                    using var req = new HttpRequestMessage(HttpMethod.Post, _responsesUri);
+                    var token = await GetTokenAsync(ct).ConfigureAwait(false);
+                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    req.Content = JsonContent.Create(body);
+
+                    HttpResponseMessage? resp = null;
+                    try
+                    {
+                        resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+
+                        if (resp.IsSuccessStatusCode)
+                        {
+                            await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
+                            var parsed = ParseFoundryResponse(doc.RootElement);
+                            _telemetry.RecordFoundryUsage(
+                                operationName,
+                                parsed.InputTokens,
+                                parsed.OutputTokens,
+                                stopwatch.Elapsed);
+                            return (parsed.Text, parsed.ResponseId);
                         }
-                    },
-                    ["agent_reference"] = new Dictionary<string, object?>
-                    {
-                        ["name"] = agentName,
-                        ["version"] = string.IsNullOrWhiteSpace(agentVersion) ? "latest" : agentVersion,
-                        ["type"] = "agent_reference",
-                    },
-                };
-                if (!string.IsNullOrWhiteSpace(previousResponseId))
-                {
-                    body["previous_response_id"] = previousResponseId;
-                }
 
-                using var req = new HttpRequestMessage(HttpMethod.Post, _responsesUri);
-                var token = await GetTokenAsync(ct).ConfigureAwait(false);
-                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                req.Content = JsonContent.Create(body);
+                        var errBody = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                        var isRateLimit = (int)resp.StatusCode == 429
+                            || errBody.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
+                            || errBody.Contains("token rate limit", StringComparison.OrdinalIgnoreCase);
 
-                HttpResponseMessage? resp = null;
-                try
-                {
-                    resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                        if (isRateLimit && attempt < maxAttempts)
+                        {
+                            _telemetry.RecordFoundryRateLimit(operationName);
+                            _telemetry.RecordFoundryRetry(operationName);
+                            var waitSeconds = ParseRetryAfter(errBody) ?? Math.Min(60, (int)Math.Pow(2, attempt) * 2);
+                            logger.LogWarning(
+                                "Foundry responses rate-limited for {Operation} (attempt {Attempt}/{Max}). Waiting {Seconds}s.",
+                                operationName, attempt, maxAttempts, waitSeconds);
+                            await Task.Delay(TimeSpan.FromSeconds(waitSeconds), ct).ConfigureAwait(false);
+                            continue;
+                        }
 
-                    if (resp.IsSuccessStatusCode)
-                    {
-                        await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-                        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
-                        return ExtractText(doc.RootElement);
+                        if (isRateLimit)
+                            _telemetry.RecordFoundryRateLimit(operationName);
+                        throw new InvalidOperationException(
+                            $"Foundry Responses API returned {(int)resp.StatusCode} {resp.StatusCode}.");
                     }
-
-                    var errBody = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-                    var isRateLimit = (int)resp.StatusCode == 429
-                        || errBody.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
-                        || errBody.Contains("token rate limit", StringComparison.OrdinalIgnoreCase);
-
-                    if (isRateLimit && attempt < maxAttempts)
+                    finally
                     {
-                        var waitSeconds = ParseRetryAfter(errBody) ?? Math.Min(60, (int)Math.Pow(2, attempt) * 2);
-                        logger.LogWarning(
-                            "Foundry responses rate-limited (attempt {Attempt}/{Max}). Waiting {Seconds}s. Detail: {Err}",
-                            attempt, maxAttempts, waitSeconds, Truncate(errBody, 400));
-                        await Task.Delay(TimeSpan.FromSeconds(waitSeconds), ct).ConfigureAwait(false);
-                        continue;
+                        resp?.Dispose();
                     }
-
-                    throw new InvalidOperationException(
-                        $"Foundry Responses API returned {(int)resp.StatusCode} {resp.StatusCode}: {Truncate(errBody, 1200)}");
                 }
-                finally
-                {
-                    resp?.Dispose();
-                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                _telemetry.RecordFoundryFailure(operationName, stopwatch.Elapsed);
+                throw;
             }
         }
 
@@ -667,7 +740,7 @@ public sealed class FoundryAnalysisService
             return _cachedToken.Token;
         }
 
-        private static (string Text, string ResponseId) ExtractText(JsonElement root)
+        public static FoundryResponseResult ParseFoundryResponse(JsonElement root)
         {
             var responseId = root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
                 ? idEl.GetString() ?? string.Empty
@@ -676,7 +749,12 @@ public sealed class FoundryAnalysisService
             // 1) Convenience flat field (common in SDKs).
             if (root.TryGetProperty("output_text", out var ot) && ot.ValueKind == JsonValueKind.String)
             {
-                return (ot.GetString() ?? string.Empty, responseId);
+                var usage = ExtractUsage(root);
+                return new FoundryResponseResult(
+                    ot.GetString() ?? string.Empty,
+                    responseId,
+                    usage.InputTokens,
+                    usage.OutputTokens);
             }
 
             // 2) Walk output[].content[].text (canonical Responses API shape).
@@ -706,8 +784,29 @@ public sealed class FoundryAnalysisService
                     }
                 }
             }
-            return (sb.ToString(), responseId);
+            var parsedUsage = ExtractUsage(root);
+            return new FoundryResponseResult(
+                sb.ToString(),
+                responseId,
+                parsedUsage.InputTokens,
+                parsedUsage.OutputTokens);
         }
+
+        private static (long InputTokens, long OutputTokens) ExtractUsage(JsonElement root)
+        {
+            if (!root.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+                return (0, 0);
+            return (
+                GetInt64(usage, "input_tokens"),
+                GetInt64(usage, "output_tokens"));
+        }
+
+        private static long GetInt64(JsonElement value, string propertyName) =>
+            value.TryGetProperty(propertyName, out var property)
+                && property.ValueKind == JsonValueKind.Number
+                && property.TryGetInt64(out var number)
+                    ? number
+                    : 0;
 
         private static int? ParseRetryAfter(string errMsg)
         {
@@ -723,4 +822,22 @@ public sealed class FoundryAnalysisService
 
         public void Dispose() { }
     }
+
+    internal static FoundryResponseResult ParseFoundryResponseForTesting(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return FoundryResponsesClient.ParseFoundryResponse(document.RootElement);
+    }
+
+    internal static Dictionary<string, object?> ParseCategorizationForTesting(string response) =>
+        TryParseJsonObject(response) ?? new Dictionary<string, object?>();
+
+    internal static GroupedAnalysis ParseGroupedAnalysisForTesting(string response) =>
+        ParseGroupedAnalysis(response);
 }
+
+internal sealed record FoundryResponseResult(
+    string Text,
+    string ResponseId,
+    long InputTokens,
+    long OutputTokens);

@@ -5,7 +5,8 @@
 @inject AnalysisStore Store
 @inject ApiSettingsStore SettingsStore
 @inject FoundryAnalysisService Foundry
-@inject AnalysisRepository Repo
+@inject IAnalysisRepository Repo
+@inject AnalysisJobManager Jobs
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @inject ILogger<Analysis> Logger
@@ -43,10 +44,13 @@ else
                 </div>
             }
             <div class="meta-row">
+                @if (!string.IsNullOrWhiteSpace(Store.LastRun?.SessionName))
+                {
+                    <div><span class="meta-label">Session</span><span class="meta-value">@Store.LastRun.SessionName</span></div>
+                }
                 <div><span class="meta-label">Document</span><span class="meta-value"><code>@Store.DocumentId</code></span></div>
                 <div><span class="meta-label">Comments</span><span class="meta-value">@(Store.HasInput ? Store.Comments.Count : (Store.LastRun?.TotalComments ?? 0))</span></div>
                 <div><span class="meta-label">Batch size</span><span class="meta-value">@SettingsStore.Current.BatchSize</span></div>
-                <div><span class="meta-label">Foundry endpoint</span><span class="meta-value endpoint">@SettingsStore.Current.FoundryEndpoint</span></div>
             </div>
             @if (Store.SelectedCount > 0)
             {
@@ -83,9 +87,27 @@ else
             <div class="progress" role="progressbar" aria-valuenow="@((int)(_progress?.Percent ?? 0))" aria-valuemin="0" aria-valuemax="100">
                 <div class="progress-bar" style="width:@((int)(_progress?.Percent ?? 0))%">@((int)(_progress?.Percent ?? 0))%</div>
             </div>
-            @if (_progress is not null && _progress.Total > 0)
+            <div class="small text-muted mt-1 d-flex gap-3 flex-wrap align-items-center">
+                @if (_progress is not null && _progress.Total > 0)
+                {
+                    <span>@(_progress.Current) / @(_progress.Total)</span>
+                }
+                @if (_currentJob is not null)
+                {
+                    <span>Elapsed: @EtaEstimator.Format(_currentJob.Elapsed)</span>
+                }
+                @if (EtaText is { } eta)
+                {
+                    <span>Est. remaining (this phase): @eta</span>
+                }
+            </div>
+            @if (_isRunning)
             {
-                <div class="small text-muted mt-1">@(_progress.Current) / @(_progress.Total)</div>
+                <div class="analysis-resilience-hint mt-2">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="vertical-align:-2px;margin-right:6px"><path d="M12 8v4m0 4h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    This analysis runs on the server. You can switch tabs or move to another page and it will keep going —
+                    come back here any time to check on it. Finished runs are always saved to the <a href="library">Library</a>.
+                </div>
             }
         </section>
     }
@@ -172,10 +194,11 @@ else
                 @{ var rank = 1; }
                 @foreach (var t in g.ThemeGroups.OrderByDescending(x => x.Count))
                 {
+                    var themeRank = rank;
                     <article class="theme-card">
                         <header class="theme-card__head">
                             <div>
-                                <span class="theme-rank">#@rank</span>
+                                <span class="theme-rank">#@themeRank</span>
                                 <h4 class="theme-card__title">@t.GroupName</h4>
                             </div>
                             <div class="theme-card__count">
@@ -220,16 +243,39 @@ else
 
                         @if (t.SubmissionNumbers.Count > 0)
                         {
+                            var submissionsExpanded = _submissionGroupExpansion.GetValueOrDefault(themeRank);
+                            var visibleSubmissions = submissionsExpanded
+                                ? t.SubmissionNumbers
+                                : t.SubmissionNumbers.Take(14);
+                            var hiddenSubmissionCount = t.SubmissionNumbers.Count - 14;
+                            var submissionsId = $"theme-submissions-{themeRank}";
                             <div class="theme-card__subs">
                                 <span class="meta-label">Submissions</span>
-                                <div class="sub-chips">
-                                    @foreach (var s in t.SubmissionNumbers.Take(14))
+                                <div class="sub-chips" id="@submissionsId">
+                                    @foreach (var s in visibleSubmissions)
                                     {
-                                        <span class="sub-chip">#@s</span>
+                                        var commentId = run.Categorizations
+                                            .FirstOrDefault(item => item.SubmissionNumber == s)?.CommentId;
+                                        @if (!string.IsNullOrWhiteSpace(commentId))
+                                        {
+                                            <a class="sub-chip" href="@CommentHref(commentId)"
+                                               title="Open submission @s (@commentId)">#@s</a>
+                                        }
+                                        else
+                                        {
+                                            <span class="sub-chip">#@s</span>
+                                        }
                                     }
-                                    @if (t.SubmissionNumbers.Count > 14)
+                                    @if (hiddenSubmissionCount > 0)
                                     {
-                                        <span class="sub-chip sub-chip--more">+@(t.SubmissionNumbers.Count - 14)</span>
+                                        <button type="button" class="sub-chip sub-chip--more"
+                                            aria-expanded="@(submissionsExpanded ? "true" : "false")" aria-controls="@submissionsId"
+                                                aria-label="@(submissionsExpanded
+                                                    ? $"Show fewer submissions for {t.GroupName}"
+                                                    : $"Show all submissions for {t.GroupName}; {hiddenSubmissionCount} more")"
+                                                @onclick="() => ToggleSubmissionGroup(themeRank)">
+                                            @(submissionsExpanded ? "Show less" : $"+{hiddenSubmissionCount}")
+                                        </button>
                                     }
                                 </div>
                             </div>
@@ -307,12 +353,13 @@ else
                         <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SendChat(s)" disabled="@_chatAsking">@s</button>
                     }
                 </div>
-                <EditForm Model="this" OnValidSubmit="SendCurrentChat" FormName="followUpAsk">
+                <form @onsubmit="SendCurrentChat" @onsubmit:preventDefault>
                     <div class="input-group">
-                        <InputText class="form-control" placeholder="Ask a question about this analysis…" @bind-Value="_chatInput" disabled="@_chatAsking" />
+                        <input class="form-control" placeholder="Ask a question about this analysis…"
+                               aria-label="Follow-up question" @bind="_chatInput" @bind:event="oninput" disabled="@_chatAsking" />
                         <button class="btn btn-primary" type="submit" disabled="@(_chatAsking || string.IsNullOrWhiteSpace(_chatInput))">Send</button>
                     </div>
-                </EditForm>
+                </form>
                 @if (_chatError is not null) { <div class="alert alert-danger mt-2 mb-0 small">@_chatError</div> }
             }
         </section>
@@ -337,8 +384,11 @@ else
                     @foreach (var cat in run.Categorizations)
                     {
                         <tr>
-                            <td>@cat.SubmissionNumber</td>
-                            <td><a href="@($"comments/{Uri.EscapeDataString(cat.CommentId)}")"><code>@cat.CommentId</code></a></td>
+                            <td>
+                                <a class="submission-number-link" href="@CommentHref(cat.CommentId)"
+                                   title="Open submission @cat.SubmissionNumber">@cat.SubmissionNumber</a>
+                            </td>
+                            <td><a href="@CommentHref(cat.CommentId)"><code>@cat.CommentId</code></a></td>
                             <td>@GetField(cat, "primary_topic", "topic", "category")</td>
                             <td>@GetField(cat, "sentiment", "overall_sentiment")</td>
                             <td>@GetField(cat, "stance", "position")</td>
@@ -358,7 +408,6 @@ else
     .meta-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem 1.25rem; }
     .meta-label { display:block; text-transform:uppercase; letter-spacing:.08em; font-size:.7rem; color:var(--color-text-muted); font-weight:600; margin-bottom:.25rem; }
     .meta-value { font-size:.95rem; }
-    .meta-value.endpoint { word-break: break-all; font-size:.85rem; }
     .analysis-status { display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; flex-wrap:wrap; }
     .analysis-status__main { flex:1 1 420px; }
     .progress-card { padding: 1rem 1.25rem; }
@@ -366,6 +415,7 @@ else
     .progress-card__msg { color: var(--color-text-muted); font-size:.92rem; }
     .progress { height: 18px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
     .progress-bar { background: linear-gradient(90deg, #2563eb, #14b8a6); color:#fff; font-size:.75rem; font-weight:600; text-align:center; line-height: 18px; min-width: 2.25rem; }
+    .analysis-resilience-hint { font-size: .82rem; color: var(--color-text-muted); background: var(--color-primary-soft); border-radius: 8px; padding: .55rem .75rem; line-height: 1.45; }
 
     .section-title { font-size: 1.2rem; font-weight: 700; margin: 0; }
     .subsection-title { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 .75rem; }
@@ -399,9 +449,12 @@ else
     .stance-bar__seg.other   { background:#6366f1; }
     .stance-bar__lbl { text-transform: capitalize; }
 
-    .sub-chips { display:flex; flex-wrap:wrap; gap:.3rem; margin-top:.3rem; }
-    .sub-chip { font-size:.72rem; padding:2px 8px; border-radius:999px; background: var(--color-primary-soft); color:#1f4ed8; font-weight:600; }
-    .sub-chip--more { background:#e2e8f0; color: var(--color-text-muted); }
+    .sub-chips { display:flex; flex-wrap:wrap; align-items:flex-start; gap:.3rem; margin-top:.3rem; }
+    .sub-chip { display:inline-flex; align-items:center; height:22px; font-size:.72rem; line-height:1; padding:2px 8px; border-radius:999px; background: var(--color-primary-soft); color:var(--color-primary); font-weight:600; text-decoration:none; }
+    a.sub-chip:hover { color:var(--color-primary-hover); text-decoration:underline; }
+    .sub-chip--more { border:0; background:var(--color-surface-muted); color:var(--color-text-muted); cursor:pointer; font-family:inherit; }
+    .sub-chip--more:hover { color:var(--color-text); text-decoration:underline; }
+    .submission-number-link { display:inline-flex; min-width:1.75rem; justify-content:center; font-weight:700; }
 
     .pattern-item { padding: .25rem 0; line-height: 1.45; }
     .raw { white-space: pre-wrap; font-size: .85rem; color: var(--color-text); margin: 0; }
@@ -410,21 +463,25 @@ else
 
     .chat-panel { display: flex; flex-direction: column; }
     .chat-history { max-height: 460px; overflow-y: auto; display: flex; flex-direction: column; gap: .65rem; padding-right: .25rem; }
-    .chat-turn { padding: .55rem .8rem; border-radius: 8px; border: 1px solid var(--color-border); }
-    .chat-turn--user { background: #eff6ff; border-color: #bfdbfe; align-self: flex-end; max-width: 85%; }
-    .chat-turn--agent { background: #f8fafc; align-self: flex-start; max-width: 90%; }
+    .chat-turn { padding: .55rem .8rem; border-radius: 8px; border: 1px solid var(--color-border); color: var(--color-text); }
+    .chat-turn--user { background: var(--chat-user-bg); border-color: var(--chat-user-border); align-self: flex-end; max-width: 85%; }
+    .chat-turn--agent { background: var(--chat-agent-bg); border-color: var(--chat-agent-border); align-self: flex-start; max-width: 90%; }
     .chat-turn--pending { opacity: .85; }
     .chat-turn__role { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; color: var(--color-text-muted); margin-bottom: .25rem; }
     .chat-turn__time { font-weight: 400; margin-left: .35rem; opacity: .7; }
-    .chat-turn__body { white-space: pre-wrap; line-height: 1.5; font-size: .95rem; }
+    .chat-turn__body { color: var(--color-text); white-space: pre-wrap; line-height: 1.5; font-size: .95rem; }
     .chat-suggestions { display: flex; flex-wrap: wrap; gap: .4rem; }
 </style>
 
 @code {
-    private CancellationTokenSource? _cts;
     private bool _isRunning;
     private AnalysisProgress? _progress;
     private string? _error;
+    private readonly Dictionary<int, bool> _submissionGroupExpansion = new();
+
+    // The detached server-side job this page is currently attached to (if any).
+    private AnalysisJob? _currentJob;
+    private System.Threading.Timer? _poll;
 
     // True when the current LastRun came from the Library (no source comments staged
     // for a re-run). Used to swap the "Re-run analysis" CTA for a "go fetch comments" hint.
@@ -443,71 +500,116 @@ else
         "Which submissions reference attachments most heavily?",
     };
 
+    private void ToggleSubmissionGroup(int themeRank) =>
+        _submissionGroupExpansion[themeRank] = !_submissionGroupExpansion.GetValueOrDefault(themeRank);
+
     protected override void OnInitialized()
     {
         _progress = Store.LastProgress;
+
+        // Re-attach to an in-flight (or just-finished) job for this document so navigating
+        // away and back — or a quick reconnect within the same circuit — keeps showing progress.
+        var job = Jobs.GetLatestForDocument(Store.DocumentId);
+        if (job is not null && (job.IsActive || (Store.LastRun is null && job.Run is not null)))
+        {
+            AttachToJob(job);
+        }
     }
 
-    private async Task StartRun()
+    /// <summary>Human-friendly estimate of time left in the current phase, or null when not meaningful.</summary>
+    private string? EtaText
+    {
+        get
+        {
+            if (_currentJob is not { IsActive: true } job) return null;
+            if (job.Progress is not { } p || job.PhaseStartedAt is not { } phaseStart) return null;
+            var eta = EtaEstimator.Estimate(DateTimeOffset.UtcNow - phaseStart, p.Current, p.Total);
+            return eta is null ? null : EtaEstimator.Format(eta.Value);
+        }
+    }
+
+    private void StartRun()
     {
         if (!Store.HasInput || _isRunning) return;
-        _isRunning = true;
-        Store.IsRunning = true;
         _error = null;
-        _progress = new AnalysisProgress { Phase = "Starting", Message = "Connecting…", Total = Store.Comments.Count };
+        var job = Jobs.Start(Store.DocumentId ?? string.Empty, Store.Comments, SettingsStore.Current);
+        AttachToJob(job);
+    }
+
+    private void AttachToJob(AnalysisJob job)
+    {
+        _currentJob = job;
+        _isRunning = job.IsActive;
+        _progress = job.Progress;
+        Store.IsRunning = job.IsActive;
+        Store.LastProgress = job.Progress;
+
+        if (job.IsActive)
+        {
+            StartPolling();
+        }
+        else
+        {
+            ApplyFinishedJob(job);
+        }
+    }
+
+    private void StartPolling()
+    {
+        _poll?.Dispose();
+        // Poll the singleton job for progress/result; the run itself is detached from this circuit.
+        _poll = new System.Threading.Timer(
+            _ => InvokeAsync(OnPollTick),
+            null,
+            TimeSpan.Zero,
+            TimeSpan.FromMilliseconds(800));
+    }
+
+    private void OnPollTick()
+    {
+        if (_currentJob is null) return;
+
+        _progress = _currentJob.Progress;
         Store.LastProgress = _progress;
-        _cts = new CancellationTokenSource();
 
-        var docId = Store.DocumentId ?? "";
-        var comments = Store.Comments;
-        var settings = SettingsStore.Current;
-
-        var progress = new Progress<AnalysisProgress>(p =>
-        {
-            _progress = p;
-            Store.LastProgress = p;
-            InvokeAsync(StateHasChanged);
-        });
-
-        try
-        {
-            var run = await Foundry.RunAsync(docId, comments, settings, progress, _cts.Token);
-            Store.LastRun = run;
-            Store.LoadedRunId = null;
-            if (!run.Succeeded) _error = run.ErrorMessage ?? "Unknown error.";
-
-            // Persist the run (regardless of success) so the Library page can show failures too.
-            try
-            {
-                Store.LoadedRunId = await Repo.SaveRunAsync(run, _cts.Token);
-            }
-            catch (Exception saveEx)
-            {
-                Logger.LogWarning(saveEx, "Failed to persist analysis run for document {DocId}.", docId);
-            }
-        }
-        catch (Exception ex)
-        {
-            _error = ex.Message;
-        }
-        finally
+        if (!_currentJob.IsActive)
         {
             _isRunning = false;
             Store.IsRunning = false;
-            _cts?.Dispose();
-            _cts = null;
+            ApplyFinishedJob(_currentJob);
+            _poll?.Dispose();
+            _poll = null;
         }
+
+        StateHasChanged();
+    }
+
+    private void ApplyFinishedJob(AnalysisJob job)
+    {
+        _isRunning = false;
+        if (job.Run is not null)
+        {
+            Store.LastRun = job.Run;
+            Store.LoadedRunId = job.SavedRunId;
+        }
+        _error = job.State switch
+        {
+            AnalysisJobState.Failed => job.Error ?? "Unknown error.",
+            AnalysisJobState.Cancelled => job.Error ?? "Analysis was cancelled.",
+            _ => null,
+        };
     }
 
     private void CancelRun()
     {
-        try { _cts?.Cancel(); } catch { }
+        if (_currentJob is { } job) Jobs.Cancel(job.Id);
     }
 
     public void Dispose()
     {
-        try { _cts?.Cancel(); } catch { }
-        _cts?.Dispose();
+        // Only stop polling — the job keeps running on the server so the user can leave the page.
+        _poll?.Dispose();
+        _poll = null;
     }
 
     private static int totalForGroup(ThemeGroup t) => t.StanceDistribution.Values.Sum();
@@ -521,6 +623,9 @@ else
         if (k.Contains("mixed")) return "mixed";
         return "other";
     }
+
+    private static string CommentHref(string commentId) =>
+        $"comments/{Uri.EscapeDataString(commentId)}";
 
     private static string GetField(CategorizationResult cat, params string[] keys)
     {
@@ -602,6 +707,7 @@ else
 
     private Task SendCurrentChat()
     {
+        if (_chatAsking || string.IsNullOrWhiteSpace(_chatInput)) return Task.CompletedTask;
         var q = _chatInput;
         _chatInput = string.Empty;
         return SendChat(q);
@@ -609,7 +715,7 @@ else
 
     private async Task SendChat(string question)
     {
-        if (Store.LastRun is null || string.IsNullOrWhiteSpace(question)) return;
+        if (Store.LastRun is null || _chatAsking || string.IsNullOrWhiteSpace(question)) return;
         _chatAsking = true;
         _chatError = null;
         var beforeCount = Store.LastRun.FollowUpHistory.Count;

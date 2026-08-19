@@ -911,10 +911,10 @@ def regulatory_comments_daily(myTimer: func.TimerRequest) -> None:
         )
         upload_to_blob(run_summary, f"4_summary/run_summary_{timestamp}.txt", storage_account_name)
         logging.info(f"Uploaded run summary to 4_summary/run_summary_{timestamp}.txt")
-        
+
         logging.info(f"Workflow completed successfully! Processed {len(csv_rows)} comments")
         logging.info(f"All outputs saved to Azure Blob Storage with timestamp {timestamp}")
-        
+
     except Exception as e:
         logging.error(f"Error in workflow: {e}", exc_info=True)
         raise

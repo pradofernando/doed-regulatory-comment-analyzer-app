@@ -8,6 +8,7 @@ public class StoredAnalysisRun
     [Key] public Guid Id { get; set; } = Guid.NewGuid();
 
     [Required, MaxLength(64)] public string DocumentId { get; set; } = string.Empty;
+    [MaxLength(160)] public string? SessionName { get; set; }
 
     public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? CompletedAt { get; set; }
