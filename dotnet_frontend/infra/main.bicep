@@ -27,7 +27,7 @@
 @maxLength(15)
 param baseName string = 'doedweb'
 
-@description('Azure region for all resources.')
+@description('Azure region for all resources. Preferred: eastus2. Some subscriptions have no dedicated App Service (B1+) quota in eastus2 — use centralus as the fallback. Verify with: az deployment group what-if.')
 param location string = resourceGroup().location
 
 @description('SKU for the Linux App Service Plan. B1 is sufficient for the workload; bump to P1v3 for more memory/CPU.')
@@ -39,7 +39,11 @@ param appServicePlanSku string = 'B1'
 param regulationsGovApiKey string
 
 @description('Foundry project endpoint, e.g. https://<name>.services.ai.azure.com/api/projects/<project>. Obtain from the Foundry portal: project -> "..." menu -> Project properties -> endpoint.')
+@minLength(1)
 param foundryProjectEndpoint string
+
+@description('Wire the API key and Foundry endpoint into app settings as Key Vault references. Set false when tenant policy forces publicNetworkAccess=Disabled on Key Vault and the app has no private endpoint to reach it; the values are then written directly to app settings, which App Service still encrypts at rest.')
+param useKeyVaultReferences bool = true
 
 @description('Foundry prompt-agent NAME for per-comment categorization (no asst_… ID — this is the agent label visible in the Foundry Agents list).')
 param categorizationAgentName string = 'RegulatoryCommentCategorizationAgent'
@@ -302,8 +306,8 @@ resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2024-10-01' 
   properties: {
     customSubDomainName: documentIntelligenceName
     disableLocalAuth: true
+    // 'FormRecognizer' accounts reject networkAcls.bypass ('Trusted Services' is unsupported for this kind).
     networkAcls: {
-      bypass: 'AzureServices'
       defaultAction: 'Allow'
       ipRules: []
       virtualNetworkRules: []
@@ -541,9 +545,9 @@ resource webAppSettings 'Microsoft.Web/sites/config@2024-04-01' = {
     Telemetry__FoundryCost__InputUsdPerMillionTokens: foundryInputUsdPerMillionTokens
     Telemetry__FoundryCost__OutputUsdPerMillionTokens: foundryOutputUsdPerMillionTokens
     Api__BaseUrl: 'https://api.regulations.gov/v4'
-    Api__ApiKey: kvRefRegsApiKey
+    Api__ApiKey: useKeyVaultReferences ? kvRefRegsApiKey : regulationsGovApiKey
     Api__DefaultDocumentId: defaultDocumentId
-    Api__FoundryEndpoint: kvRefFoundryEndpoint
+    Api__FoundryEndpoint: useKeyVaultReferences ? kvRefFoundryEndpoint : foundryProjectEndpoint
     Api__CategorizationAgentName: categorizationAgentName
     Api__CategorizationAgentVersion: categorizationAgentVersion
     Api__GroupingAgentName: groupingAgentName
@@ -671,8 +675,8 @@ output documentIntelligenceEndpoint string = documentIntelligenceEndpoint
 output payloadContainerUri string = payloadContainerUri
 output effectiveCosmosEndpoint string = effectiveCosmosEndpoint
 
-@description('Run this command once after the first deployment to grant the web app permission to call the Azure AI Foundry agents. Replace <FOUNDRY-PROJECT-RESOURCE-ID> with the full ARM ID of the existing Foundry project, e.g. /subscriptions/.../resourceGroups/rg-doed-comments/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>.')
-output foundryRoleAssignmentCommand string = 'az role assignment create --assignee-object-id ${webApp.identity.principalId} --assignee-principal-type ServicePrincipal --role "Azure AI User" --scope <FOUNDRY-PROJECT-RESOURCE-ID>'
+@description('Run these commands once after the first deployment to grant the web app permission to call the Azure AI Foundry prompt agents. Replace <FOUNDRY-PROJECT-RESOURCE-ID> with the full ARM ID of the existing Foundry project, e.g. /subscriptions/.../resourceGroups/rg-doed-comments/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>. Older tenants expose these two roles as the single legacy role "Azure AI User".')
+output foundryRoleAssignmentCommand string = 'az role assignment create --assignee-object-id ${webApp.identity.principalId} --assignee-principal-type ServicePrincipal --role "Foundry Project Runtime User" --scope <FOUNDRY-PROJECT-RESOURCE-ID>; az role assignment create --assignee-object-id ${webApp.identity.principalId} --assignee-principal-type ServicePrincipal --role "Foundry Agent Consumer" --scope <FOUNDRY-PROJECT-RESOURCE-ID>'
 
 @description('For Cosmos persistence, grant this principal the Cosmos DB Built-in Data Contributor role on the target account. The container partition key must be /id.')
 output cosmosPrincipalId string = persistenceProvider == 'Cosmos' ? webApp.identity.principalId : ''

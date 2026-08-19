@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "17052278102387278101"
+      "templateHash": "582729489037170926"
     }
   },
   "parameters": {
@@ -22,7 +22,7 @@
       "type": "string",
       "defaultValue": "[resourceGroup().location]",
       "metadata": {
-        "description": "Azure region for all resources."
+        "description": "Azure region for all resources. Preferred: eastus2. Some subscriptions have no dedicated App Service (B1+) quota in eastus2 — use centralus as the fallback. Verify with: az deployment group what-if."
       }
     },
     "appServicePlanSku": {
@@ -48,8 +48,16 @@
     },
     "foundryProjectEndpoint": {
       "type": "string",
+      "minLength": 1,
       "metadata": {
         "description": "Foundry project endpoint, e.g. https://<name>.services.ai.azure.com/api/projects/<project>. Obtain from the Foundry portal: project -> \"...\" menu -> Project properties -> endpoint."
+      }
+    },
+    "useKeyVaultReferences": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Wire the API key and Foundry endpoint into app settings as Key Vault references. Set false when tenant policy forces publicNetworkAccess=Disabled on Key Vault and the app has no private endpoint to reach it; the values are then written directly to app settings, which App Service still encrypts at rest."
       }
     },
     "categorizationAgentName": {
@@ -455,7 +463,6 @@
         "customSubDomainName": "[variables('documentIntelligenceName')]",
         "disableLocalAuth": true,
         "networkAcls": {
-          "bypass": "AzureServices",
           "defaultAction": "Allow",
           "ipRules": [],
           "virtualNetworkRules": []
@@ -700,9 +707,9 @@
         "Telemetry__FoundryCost__InputUsdPerMillionTokens": "[parameters('foundryInputUsdPerMillionTokens')]",
         "Telemetry__FoundryCost__OutputUsdPerMillionTokens": "[parameters('foundryOutputUsdPerMillionTokens')]",
         "Api__BaseUrl": "https://api.regulations.gov/v4",
-        "Api__ApiKey": "[variables('kvRefRegsApiKey')]",
+        "Api__ApiKey": "[if(parameters('useKeyVaultReferences'), variables('kvRefRegsApiKey'), parameters('regulationsGovApiKey'))]",
         "Api__DefaultDocumentId": "[parameters('defaultDocumentId')]",
-        "Api__FoundryEndpoint": "[variables('kvRefFoundryEndpoint')]",
+        "Api__FoundryEndpoint": "[if(parameters('useKeyVaultReferences'), variables('kvRefFoundryEndpoint'), parameters('foundryProjectEndpoint'))]",
         "Api__CategorizationAgentName": "[parameters('categorizationAgentName')]",
         "Api__CategorizationAgentVersion": "[parameters('categorizationAgentVersion')]",
         "Api__GroupingAgentName": "[parameters('groupingAgentName')]",
@@ -883,9 +890,9 @@
     "foundryRoleAssignmentCommand": {
       "type": "string",
       "metadata": {
-        "description": "Run this command once after the first deployment to grant the web app permission to call the Azure AI Foundry agents. Replace <FOUNDRY-PROJECT-RESOURCE-ID> with the full ARM ID of the existing Foundry project, e.g. /subscriptions/.../resourceGroups/rg-doed-comments/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>."
+        "description": "Run these commands once after the first deployment to grant the web app permission to call the Azure AI Foundry prompt agents. Replace <FOUNDRY-PROJECT-RESOURCE-ID> with the full ARM ID of the existing Foundry project, e.g. /subscriptions/.../resourceGroups/rg-doed-comments/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>. Older tenants expose these two roles as the single legacy role \"Azure AI User\"."
       },
-      "value": "[format('az role assignment create --assignee-object-id {0} --assignee-principal-type ServicePrincipal --role \"Azure AI User\" --scope <FOUNDRY-PROJECT-RESOURCE-ID>', reference(resourceId('Microsoft.Web/sites', variables('appName')), '2024-04-01', 'full').identity.principalId)]"
+      "value": "[format('az role assignment create --assignee-object-id {0} --assignee-principal-type ServicePrincipal --role \"Foundry Project Runtime User\" --scope <FOUNDRY-PROJECT-RESOURCE-ID>; az role assignment create --assignee-object-id {1} --assignee-principal-type ServicePrincipal --role \"Foundry Agent Consumer\" --scope <FOUNDRY-PROJECT-RESOURCE-ID>', reference(resourceId('Microsoft.Web/sites', variables('appName')), '2024-04-01', 'full').identity.principalId, reference(resourceId('Microsoft.Web/sites', variables('appName')), '2024-04-01', 'full').identity.principalId)]"
     },
     "cosmosPrincipalId": {
       "type": "string",

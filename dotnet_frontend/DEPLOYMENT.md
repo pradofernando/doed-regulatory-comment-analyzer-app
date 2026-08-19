@@ -156,7 +156,7 @@ az bicep build --file .\dotnet_frontend\infra\main.bicep
 az bicep build-params --file .\dotnet_frontend\infra\main.bicepparam
 ```
 
-The CI workflow runs equivalent checks for pull requests and pushes to `main` or `feprado`.
+The CI workflow runs equivalent checks for pull requests and pushes to `main`.
 
 ## Step 2: Authenticate to the correct tenant
 

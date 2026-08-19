@@ -245,7 +245,7 @@ az bicep build --file infra/main.bicep
 The versioned synthetic fixture at `../dotnet_frontend.Tests/Fixtures/ai-evaluation.v1.json`
 checks categorization vocabulary and grouped-analysis completeness without calling Foundry.
 `.github/workflows/ci.yml` runs release build, evaluation, all tests, dependency audit, and Bicep
-compilation for pull requests and pushes to `main` or `feprado`.
+compilation for pull requests and pushes to `main`.
 
 Coverage includes generated multi-page PDFs, unsafe redirects, byte/MIME/signature/archive
 limits, Foundry HTTP contracts, job completion/cancellation/persistence, relational paging,

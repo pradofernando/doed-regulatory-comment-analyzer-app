@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - feprado
 
 permissions:
   contents: read
@@ -71,6 +70,9 @@ jobs:
 
       - name: Compile Bicep
         uses: azure/CLI@v2
+        env:
+          # Placeholder only. foundryProjectEndpoint is @minLength(1), so compilation fails when unset.
+          FOUNDRY_PROJECT_ENDPOINT: https://placeholder.services.ai.azure.com/api/projects/placeholder
         with:
           inlineScript: |
             az bicep build --file dotnet_frontend/infra/main.bicep --outfile /tmp/main.json

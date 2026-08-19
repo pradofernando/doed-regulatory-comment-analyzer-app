@@ -33,6 +33,41 @@ security, and troubleshooting. This README is the quick reference for files in `
 | Cosmos DB *(optional)* | Serverless aggregate and compact summary containers with explicit indexing policies. |
 | Azure Monitor alerts | HTTP 5xx and sustained response-time alerts; notifications are attached when `ALERT_EMAIL` is set. |
 
+## Choose a region
+
+`main.bicepparam` binds `location` to the `AZURE_LOCATION` environment variable and defaults to
+**`eastus2`**. Fall back to **`centralus`** when the target subscription has no dedicated App
+Service quota in East US 2.
+
+```pwsh
+azd env set AZURE_LOCATION eastus2      # preferred
+azd env set AZURE_LOCATION centralus    # fallback when eastus2 has no B1 quota
+```
+
+Dedicated (B1 and above) App Service plans consume a per-region VM quota that is often `0` on new
+or sandboxed subscriptions, even where Flex Consumption works. Always confirm before deploying:
+
+```pwsh
+az deployment group what-if --resource-group <rg> --parameters .\main.bicepparam
+```
+
+A shortfall surfaces as `InternalSubscriptionIsOverQuotaForSku` and names the region and the
+required limit. Either request a quota increase for that region or switch `AZURE_LOCATION`. The
+Foundry project may live in a different region; cross-region calls are supported and add only
+minor latency.
+
+## Required before the template compiles
+
+`foundryProjectEndpoint` is declared `@minLength(1)` and has no built-in default, so there is no
+way to deploy against someone else's Foundry project by accident. Export the value first:
+
+```pwsh
+$env:FOUNDRY_PROJECT_ENDPOINT = "https://<resource>.services.ai.azure.com/api/projects/<project>"
+```
+
+Leaving it unset makes `az bicep build-params` fail with `BCP333 ... too short to assign to a
+target for which the minimum allowable length is 1`. That error means the endpoint is missing.
+
 ## Deployment profiles
 
 | Provider | How resources are obtained | Scale note |

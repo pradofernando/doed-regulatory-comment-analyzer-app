@@ -7,6 +7,7 @@ using DoedRegulatoryComments.Web.Data;
 using DoedRegulatoryComments.Web.Services;
 using Microsoft.Azure.Cosmos;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
@@ -117,7 +118,19 @@ if (persistenceProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
 {
     var connectionString = builder.Configuration.GetConnectionString("AnalysisDb")
         ?? $"Data Source={Path.Combine(builder.Environment.ContentRootPath, "App_Data", "analysis.db")}";
-    Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "App_Data"));
+
+    // SQLite creates the database file but never its parent directory (e.g. /home/data on App Service).
+    var dataSource = new SqliteConnectionStringBuilder(connectionString).DataSource;
+    if (!string.IsNullOrWhiteSpace(dataSource) && !dataSource.StartsWith(":memory:", StringComparison.Ordinal))
+    {
+        var databaseDirectory = Path.GetDirectoryName(
+            Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, dataSource)));
+        if (!string.IsNullOrEmpty(databaseDirectory))
+        {
+            Directory.CreateDirectory(databaseDirectory);
+        }
+    }
+
     builder.Services.AddDbContextFactory<AnalysisDbContext>(options => options.UseSqlite(connectionString));
     builder.Services.AddScoped<AnalysisRepository>();
     builder.Services.AddScoped<IAnalysisRepository>(sp => sp.GetRequiredService<AnalysisRepository>());

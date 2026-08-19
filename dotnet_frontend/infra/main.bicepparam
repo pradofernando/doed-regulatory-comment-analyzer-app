@@ -3,10 +3,16 @@ using './main.bicep'
 param baseName = 'doedweb'
 param appServicePlanSku = 'B1'
 
+// Preferred region is eastus2. If the subscription has no dedicated App Service (B1+)
+// quota there, set AZURE_LOCATION=centralus. Confirm with `az deployment group what-if`
+// before deploying — a missing-quota preflight error names the region explicitly.
+param location = readEnvironmentVariable('AZURE_LOCATION', 'eastus2')
+
 // === You MUST set these before running azd up / az deployment ===
 // REGS_API_KEY environment variable will be passed by azd from .env / shell.
 param regulationsGovApiKey = readEnvironmentVariable('REGS_API_KEY', '')
-param foundryProjectEndpoint = readEnvironmentVariable('FOUNDRY_PROJECT_ENDPOINT', 'https://DOE-Demo.services.ai.azure.com/api/projects/DOE-Proj')
+param foundryProjectEndpoint = readEnvironmentVariable('FOUNDRY_PROJECT_ENDPOINT', '')
+param useKeyVaultReferences = readEnvironmentVariable('USE_KEY_VAULT_REFERENCES', 'true') == 'true'
 param categorizationAgentName = readEnvironmentVariable('FOUNDRY_CATEGORIZATION_AGENT_NAME', 'RegulatoryCommentCategorizationAgent')
 param categorizationAgentVersion = readEnvironmentVariable('FOUNDRY_CATEGORIZATION_AGENT_VERSION', 'latest')
 param groupingAgentName = readEnvironmentVariable('FOUNDRY_GROUPING_AGENT_NAME', 'RegulatoryCommentGroupingAgent')
