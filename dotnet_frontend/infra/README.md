@@ -1,7 +1,7 @@
 # Web frontend infrastructure
 
 Bicep deploys the Azure resources for the .NET 9 Blazor Server web frontend.
-The existing Foundry agents (from `../../azure_func/infra/`) are reused — this
+The existing Foundry agents (from `../../azure_func_v2/infra/`) are reused — this
 template does **not** create or modify them.
 
 For the complete procedure, use the [Azure Deployment Runbook](../DEPLOYMENT.md).

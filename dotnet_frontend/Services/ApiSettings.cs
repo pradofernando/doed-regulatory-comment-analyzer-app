@@ -17,6 +17,9 @@ public class ApiSettings
     /// <summary>Foundry prompt-agent NAME for theme grouping + collective analysis.</summary>
     public const string DefaultGroupingAgentName = "RegulatoryCommentGroupingAgent";
 
+    /// <summary>Optional Foundry prompt-agent NAME for validating grouped analysis.</summary>
+    public const string DefaultValidationAgentName = "";
+
     /// <summary>Foundry prompt-agent NAME for the post-analysis follow-up Q&amp;A chat. Optional — leave empty to disable the chat panel.</summary>
     public const string DefaultFollowUpAgentName = "RegulatoryCommentFollowUpAgent";
 
@@ -43,6 +46,9 @@ public class ApiSettings
 
     public string GroupingAgentName { get; set; } = DefaultGroupingAgentName;
     public string GroupingAgentVersion { get; set; } = DefaultAgentVersion;
+
+    public string ValidationAgentName { get; set; } = DefaultValidationAgentName;
+    public string ValidationAgentVersion { get; set; } = DefaultAgentVersion;
 
     public string FollowUpAgentName { get; set; } = DefaultFollowUpAgentName;
     public string FollowUpAgentVersion { get; set; } = DefaultAgentVersion;

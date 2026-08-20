@@ -57,6 +57,12 @@ param groupingAgentName string = 'RegulatoryCommentGroupingAgent'
 @description('Foundry prompt-agent version for the grouping agent.')
 param groupingAgentVersion string = 'latest'
 
+@description('Foundry prompt-agent NAME for validating grouped analysis. Optional; pass an empty string to skip validation.')
+param validationAgentName string = ''
+
+@description('Foundry prompt-agent version for the validation agent.')
+param validationAgentVersion string = 'latest'
+
 @description('Foundry prompt-agent NAME for the follow-up Q&A chat. Optional — pass empty string to disable.')
 param followUpAgentName string = ''
 
@@ -446,9 +452,6 @@ resource cosmosSummaryContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDataba
         ]
         includedPaths: [
           {
-            path: '/id/?'
-          }
-          {
             path: '/type/?'
           }
           {
@@ -552,6 +555,8 @@ resource webAppSettings 'Microsoft.Web/sites/config@2024-04-01' = {
     Api__CategorizationAgentVersion: categorizationAgentVersion
     Api__GroupingAgentName: groupingAgentName
     Api__GroupingAgentVersion: groupingAgentVersion
+    Api__ValidationAgentName: validationAgentName
+    Api__ValidationAgentVersion: validationAgentVersion
     Api__FollowUpAgentName: followUpAgentName
     Api__FollowUpAgentVersion: followUpAgentVersion
     Api__ModelDeploymentName: modelDeploymentName

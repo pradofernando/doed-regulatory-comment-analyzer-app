@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "582729489037170926"
+      "templateHash": "12186966794454165500"
     }
   },
   "parameters": {
@@ -86,6 +86,20 @@
       "defaultValue": "latest",
       "metadata": {
         "description": "Foundry prompt-agent version for the grouping agent."
+      }
+    },
+    "validationAgentName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Foundry prompt-agent NAME for validating grouped analysis. Optional; pass an empty string to skip validation."
+      }
+    },
+    "validationAgentVersion": {
+      "type": "string",
+      "defaultValue": "latest",
+      "metadata": {
+        "description": "Foundry prompt-agent version for the validation agent."
       }
     },
     "followUpAgentName": {
@@ -616,9 +630,6 @@
             ],
             "includedPaths": [
               {
-                "path": "/id/?"
-              },
-              {
                 "path": "/type/?"
               },
               {
@@ -714,6 +725,8 @@
         "Api__CategorizationAgentVersion": "[parameters('categorizationAgentVersion')]",
         "Api__GroupingAgentName": "[parameters('groupingAgentName')]",
         "Api__GroupingAgentVersion": "[parameters('groupingAgentVersion')]",
+        "Api__ValidationAgentName": "[parameters('validationAgentName')]",
+        "Api__ValidationAgentVersion": "[parameters('validationAgentVersion')]",
         "Api__FollowUpAgentName": "[parameters('followUpAgentName')]",
         "Api__FollowUpAgentVersion": "[parameters('followUpAgentVersion')]",
         "Api__ModelDeploymentName": "[parameters('modelDeploymentName')]",

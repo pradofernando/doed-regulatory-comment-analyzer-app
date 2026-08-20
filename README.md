@@ -46,7 +46,11 @@ The latest validated local suite contains 90 tests. The exact count can grow as 
 │   ├── README.md                     ← Frontend architecture and configuration reference.
 │   └── DEPLOYMENT.md                 ← Complete Azure deployment and operations runbook.
 │
-├── azure_func/                       ← Older Python Azure Functions implementation (batch job).
+├── azure_func_v2/                    ← Current Agent Framework Azure Functions workflow and IaC.
+│   ├── doed_regulatory_comments_func/
+│   └── infra/                        ← Bicep, prompt-agent creation, and deployment scripts.
+│
+├── azure_func/                       ← Legacy Python Azure Functions implementation retained for reference.
 │   ├── doed_regulatory_comments_func/
 │   └── infra/                        ← Bicep template for the Function-based deployment.
 │
@@ -107,9 +111,10 @@ The app calls the new **Foundry "prompt agents"** through the Responses API. You
 | --- | --- | --- |
 | **Categorization** | `RegulatoryCommentCategorizationAgent` | Reads one comment at a time, emits a JSON categorization (themes, sentiment, recommendations). |
 | **Grouping** | `RegulatoryCommentGroupingAgent` | Reads batches of categorizations and produces a single combined analysis. Multi-turn — the app threads batches together. |
+| **Validation** *(optional)* | `RegulatoryCommentValidationAgent` | Reviews grouped output and applies minimal corrections when coverage or grouping is invalid. |
 | **Follow-up** *(optional)* | `RegulatoryCommentFollowUpAgent` | Stateful chat about the completed analysis. Leave blank to disable the chat panel. |
 
-Each agent needs an instruction/prompt template appropriate for its job — see the existing prompts in your Foundry project, or use the example prompts in `azure_func/README.md` as a starting point. All three can share the same underlying model (e.g. `gpt-5.4`).
+Each agent needs an instruction/prompt template appropriate for its job. The Function v2 deployment creates categorization, grouping, and validation agents from [`azure_func_v2/AGENT_PROMPTS.md`](azure_func_v2/AGENT_PROMPTS.md). All agents can share the same underlying model deployment.
 
 ---
 
@@ -127,6 +132,18 @@ Four persistence profiles are supported:
 | Existing Azure SQL | Relational production storage and App Service scale-out. |
 | Existing Cosmos DB | Reuse an externally managed Cosmos account. |
 | Template-managed serverless Cosmos DB | Provision a new account, aggregate container, summary container, and data-plane RBAC. |
+
+The root deployment orchestrates Function v2 and the frontend. SQLite remains the default. To provision and use serverless Cosmos DB for frontend analysis history:
+
+```powershell
+.\deploy.ps1 `
+	-RegulationsGovApiKey $env:REGS_API_KEY `
+	-PersistenceProvider Cosmos `
+	-ProvisionCosmosResources `
+	-EnablePayloadStorage
+```
+
+Use `-CosmosEndpoint` instead of `-ProvisionCosmosResources` when targeting an existing Cosmos account.
 
 The canonical deployment guide is [dotnet_frontend/DEPLOYMENT.md](dotnet_frontend/DEPLOYMENT.md). It includes:
 
@@ -190,12 +207,12 @@ All the runtime overrides are stored in `dotnet_frontend/App_Data/api-settings.j
 This repo is intentionally clean of secrets. The following are **gitignored** and you'll never see them on GitHub:
 
 - `.env` (root, used by the Python scripts)
-- `azure_func/doed_regulatory_comments_func/local.settings.json`
+- `azure_func_v2/doed_regulatory_comments_func/local.settings.json`
 - `dotnet_frontend/App_Data/` (settings + SQLite DB)
 - `.azure/` (azd env state)
 - All `bin/`, `obj/`, virtual-env, and pycache folders
 
-Template versions live alongside them: [`.env.example`](.env.example) and [`azure_func/doed_regulatory_comments_func/local.settings.json.example`](azure_func/doed_regulatory_comments_func/local.settings.json.example).
+Template versions live alongside them: [`.env.example`](.env.example) and [`azure_func_v2/doed_regulatory_comments_func/local.settings.json.example`](azure_func_v2/doed_regulatory_comments_func/local.settings.json.example).
 
 If you fork or clone this for your own org, double-check that any default endpoint URLs in source files (e.g. `dotnet_frontend/Services/ApiSettings.cs`, `azure_func/infra/main.bicep`) are still empty/generic before sharing.
 
@@ -220,7 +237,7 @@ python consolidate_comments_to_csv.py    # 2. extract attachment text into a CSV
 python process_csv_rows.py               # 3. categorize + group via Azure AI agents
 ```
 
-Deployment for the Function App version is in [`azure_func/README.md`](azure_func/README.md).
+Deployment for the current Function App is in [`azure_func_v2/README.md`](azure_func_v2/README.md). The legacy implementation remains under [`azure_func/`](azure_func/).
 
 ---
 

@@ -1,5 +1,5 @@
 {
-    "azureFunctions.deploySubpath": "azure_func\\doed_regulatory_comments_func",
+    "azureFunctions.deploySubpath": "azure_func_v2\\doed_regulatory_comments_func",
     "azureFunctions.scmDoBuildDuringDeployment": true,
     "azureFunctions.pythonVenv": ".venv",
     "azureFunctions.projectLanguage": "Python",

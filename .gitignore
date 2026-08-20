@@ -6,6 +6,7 @@
 
 # Azure Functions local settings
 azure_func/doed_regulatory_comments_func/local.settings.json
+azure_func_v2/doed_regulatory_comments_func/local.settings.json
 **/local.settings.json
 !**/local.settings.json.example
 
@@ -32,6 +33,7 @@ __pycache__/
 *.py[cod]
 .python_packages/
 .venv/
+.venv311/
 .venv_x64/
 venv/
 env/
@@ -52,9 +54,13 @@ comments_summarized_*.csv
 categorizations_*.json
 grouped_analysis_*.json
 attachments/
+logs/
+logs.zip
+results.txt
 
 # IDE / OS
 azure_func/doed_regulatory_comments_func/.vscode
+azure_func_v2/doed_regulatory_comments_func/.vscode
 .vs/
 .vscode/launch.json
 *.user

@@ -21,7 +21,7 @@ public interface IAnalysisRunner
 
 /// <summary>
 /// Mirrors the Python function-app workflow: Agent 1 categorizes each comment, Agent 2 groups them
-/// in batches and produces a collective JSON analysis.
+/// in batches, and an optional validation agent reviews the collective JSON analysis.
 ///
 /// Implementation note: this version targets the new Microsoft Foundry "prompt agents" via the
 /// Azure OpenAI Responses API (POST /openai/v1/responses) with an "agent_reference" extra body
@@ -268,6 +268,35 @@ public sealed class FoundryAnalysisService : IAnalysisRunner
             }
 
             run.Grouped = ParseGroupedAnalysis(finalResponse);
+            if (!string.IsNullOrWhiteSpace(settings.ValidationAgentName) && run.Grouped.ParsedSuccessfully)
+            {
+                progress?.Report(new AnalysisProgress
+                {
+                    Phase = "Validating",
+                    Current = 0,
+                    Total = 1,
+                    Message = "Reviewing grouped analysis with validation agent…",
+                });
+
+                var validationPrompt = BuildValidationPrompt(run.Categorizations, run.Grouped, comments.Count);
+                var (validationResponse, _) = await foundry.CreateResponseAsync(
+                    operationName: "validation",
+                    settings.ValidationAgentName,
+                    settings.ValidationAgentVersion,
+                    validationPrompt,
+                    previousResponseId: null,
+                    cancellationToken,
+                    _logger).ConfigureAwait(false);
+
+                run.Grouped = ApplyValidationResponse(run.Grouped, validationResponse, comments.Count, _logger);
+                progress?.Report(new AnalysisProgress
+                {
+                    Phase = "Validating",
+                    Current = 1,
+                    Total = 1,
+                    Message = "Validation complete.",
+                });
+            }
             run.Comments = comments;
             run.AttachmentText = attachmentText;
             run.Succeeded = true;
@@ -538,6 +567,80 @@ public sealed class FoundryAnalysisService : IAnalysisRunner
         result.ParsedSuccessfully = false;
         return result;
     }
+
+    private static string BuildValidationPrompt(
+        IReadOnlyList<CategorizationResult> categorizations,
+        GroupedAnalysis grouped,
+        int expectedTotalComments)
+    {
+        var categorizationInputs = categorizations.Select(c => new
+        {
+            submission_number = c.SubmissionNumber,
+            csv_row = c.SubmissionNumber,
+            row_data = c.RowData,
+            categorization = c.Parsed.Count > 0 ? (object)c.Parsed : c.RawResponse,
+        });
+
+        return "Review the grouped analysis against the categorization inputs. " +
+               "Return JSON only in the validator schema from your instructions. " +
+               "Use status 'pass' when no material correction is needed. Otherwise use status 'corrected' " +
+               "and include the minimally corrected grouped analysis in collective_analysis. " +
+               $"Every submission number from 1 through {expectedTotalComments} must appear exactly once.\n\n" +
+               "Categorization inputs:\n" + JsonSerializer.Serialize(categorizationInputs) +
+               "\n\nCurrent grouped analysis:\n" + JsonSerializer.Serialize(grouped);
+    }
+
+    private static GroupedAnalysis ApplyValidationResponse(
+        GroupedAnalysis original,
+        string validationResponse,
+        int expectedTotalComments,
+        ILogger logger)
+    {
+        try
+        {
+            var clean = StripFences(validationResponse);
+            using var doc = JsonDocument.Parse(clean);
+            var root = doc.RootElement;
+            var status = root.TryGetProperty("status", out var statusElement)
+                && statusElement.ValueKind == JsonValueKind.String
+                    ? statusElement.GetString()
+                    : null;
+
+            if (string.Equals(status, "pass", StringComparison.OrdinalIgnoreCase))
+                return original;
+
+            GroupedAnalysis candidate;
+            if (root.TryGetProperty("collective_analysis", out var collective)
+                && collective.ValueKind == JsonValueKind.Object)
+            {
+                candidate = ParseGroupedAnalysis(collective.GetRawText());
+            }
+            else
+            {
+                candidate = ParseGroupedAnalysis(clean);
+            }
+
+            var evaluation = AnalysisContractValidator.EvaluateGroupedAnalysis(candidate, expectedTotalComments);
+            if (evaluation.IsValid)
+                return candidate;
+
+            logger.LogWarning(
+                "Validation agent returned an invalid correction; retaining original grouped analysis. Errors: {Errors}",
+                string.Join("; ", evaluation.Errors));
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(ex, "Validation agent returned malformed JSON; retaining original grouped analysis.");
+        }
+
+        return original;
+    }
+
+    internal static GroupedAnalysis ApplyValidationResponseForTesting(
+        GroupedAnalysis original,
+        string validationResponse,
+        int expectedTotalComments) =>
+        ApplyValidationResponse(original, validationResponse, expectedTotalComments, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
 
     private static bool TryDeserialize(string text, out GroupedAnalysis? value)
     {

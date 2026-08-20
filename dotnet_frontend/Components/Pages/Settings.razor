@@ -78,6 +78,16 @@
             </div>
 
             <div class="col-md-8">
+                <label class="form-label">Validation agent name <span class="text-muted small">(optional)</span></label>
+                <InputText class="form-control" @bind-Value="_form.ValidationAgentName" placeholder="RegulatoryCommentValidationAgent (optional)" />
+                <div class="form-text">Reviews grouped output for coherent themes and exact submission coverage.</div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Version</label>
+                <InputText class="form-control" @bind-Value="_form.ValidationAgentVersion" placeholder="latest" />
+            </div>
+
+            <div class="col-md-8">
                 <label class="form-label">Follow-up Q&amp;A agent name <span class="text-muted small">(optional)</span></label>
                 <InputText class="form-control" @bind-Value="_form.FollowUpAgentName" placeholder="RegulatoryCommentFollowUpAgent (optional)" />
                 <div class="form-text">Leave blank to disable the chat panel after a run.</div>

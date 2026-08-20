@@ -38,6 +38,8 @@ public sealed class ApiSettingsStore
         ApplyEnvOverride(Environment.GetEnvironmentVariable("CATEGORIZATION_AGENT_VERSION"), v => initial.CategorizationAgentVersion = v);
         ApplyEnvOverride(Environment.GetEnvironmentVariable("GROUPING_AGENT_NAME"), v => initial.GroupingAgentName = v);
         ApplyEnvOverride(Environment.GetEnvironmentVariable("GROUPING_AGENT_VERSION"), v => initial.GroupingAgentVersion = v);
+        ApplyEnvOverride(Environment.GetEnvironmentVariable("VALIDATION_AGENT_NAME"), v => initial.ValidationAgentName = v);
+        ApplyEnvOverride(Environment.GetEnvironmentVariable("VALIDATION_AGENT_VERSION"), v => initial.ValidationAgentVersion = v);
         ApplyEnvOverride(Environment.GetEnvironmentVariable("FOLLOWUP_AGENT_NAME"), v => initial.FollowUpAgentName = v);
         ApplyEnvOverride(Environment.GetEnvironmentVariable("FOLLOWUP_AGENT_VERSION"), v => initial.FollowUpAgentVersion = v);
         ApplyEnvOverride(Environment.GetEnvironmentVariable("AZURE_AI_AGENT_MODEL_DEPLOYMENT_NAME"), v => initial.ModelDeploymentName = v);
@@ -61,6 +63,8 @@ public sealed class ApiSettingsStore
                     if (!string.IsNullOrWhiteSpace(fromFile.CategorizationAgentVersion)) initial.CategorizationAgentVersion = fromFile.CategorizationAgentVersion;
                     if (!string.IsNullOrWhiteSpace(fromFile.GroupingAgentName)) initial.GroupingAgentName = fromFile.GroupingAgentName;
                     if (!string.IsNullOrWhiteSpace(fromFile.GroupingAgentVersion)) initial.GroupingAgentVersion = fromFile.GroupingAgentVersion;
+                    if (!string.IsNullOrWhiteSpace(fromFile.ValidationAgentName)) initial.ValidationAgentName = fromFile.ValidationAgentName;
+                    if (!string.IsNullOrWhiteSpace(fromFile.ValidationAgentVersion)) initial.ValidationAgentVersion = fromFile.ValidationAgentVersion;
                     if (!string.IsNullOrWhiteSpace(fromFile.FollowUpAgentName)) initial.FollowUpAgentName = fromFile.FollowUpAgentName;
                     if (!string.IsNullOrWhiteSpace(fromFile.FollowUpAgentVersion)) initial.FollowUpAgentVersion = fromFile.FollowUpAgentVersion;
                     if (!string.IsNullOrWhiteSpace(fromFile.ModelDeploymentName)) initial.ModelDeploymentName = fromFile.ModelDeploymentName;
@@ -114,6 +118,8 @@ public sealed class ApiSettingsStore
                 CategorizationAgentVersion = string.IsNullOrWhiteSpace(updated.CategorizationAgentVersion) ? ApiSettings.DefaultAgentVersion : updated.CategorizationAgentVersion.Trim(),
                 GroupingAgentName = string.IsNullOrWhiteSpace(updated.GroupingAgentName) ? ApiSettings.DefaultGroupingAgentName : updated.GroupingAgentName.Trim(),
                 GroupingAgentVersion = string.IsNullOrWhiteSpace(updated.GroupingAgentVersion) ? ApiSettings.DefaultAgentVersion : updated.GroupingAgentVersion.Trim(),
+                ValidationAgentName = updated.ValidationAgentName?.Trim() ?? string.Empty,
+                ValidationAgentVersion = string.IsNullOrWhiteSpace(updated.ValidationAgentVersion) ? ApiSettings.DefaultAgentVersion : updated.ValidationAgentVersion.Trim(),
                 FollowUpAgentName = updated.FollowUpAgentName?.Trim() ?? string.Empty,
                 FollowUpAgentVersion = string.IsNullOrWhiteSpace(updated.FollowUpAgentVersion) ? ApiSettings.DefaultAgentVersion : updated.FollowUpAgentVersion.Trim(),
                 ModelDeploymentName = string.IsNullOrWhiteSpace(updated.ModelDeploymentName) ? ApiSettings.DefaultModelDeploymentName : updated.ModelDeploymentName.Trim(),
@@ -150,6 +156,8 @@ public sealed class ApiSettingsStore
         CategorizationAgentVersion = s.CategorizationAgentVersion,
         GroupingAgentName = s.GroupingAgentName,
         GroupingAgentVersion = s.GroupingAgentVersion,
+        ValidationAgentName = s.ValidationAgentName,
+        ValidationAgentVersion = s.ValidationAgentVersion,
         FollowUpAgentName = s.FollowUpAgentName,
         FollowUpAgentVersion = s.FollowUpAgentVersion,
         ModelDeploymentName = s.ModelDeploymentName,

@@ -27,7 +27,7 @@ contract evaluation.
 1. `RegulationsGovClient` retrieves comments and details.
 2. `AttachmentExtractor` obtains text from bounded PDF/DOCX inputs and optionally calls Document Intelligence for sparse PDFs.
 3. `AnalysisJobManager` runs a job outside the Blazor circuit so navigation does not cancel it.
-4. `FoundryAnalysisService` calls the categorization agent once per comment, then sends categorization batches through the grouping agent.
+4. `FoundryAnalysisService` calls the categorization agent once per comment, sends categorization batches through the grouping agent, and optionally asks a validation agent to review the grouped result.
 5. `IAnalysisRepository` persists the result through SQLite, Azure SQL, or Cosmos DB.
 6. The Library reopens saved runs; the optional follow-up agent continues a Responses API chain.
 7. `OperationalTelemetry` reports bounded metrics without recording prompts, model responses, comment bodies, attachment contents, or API keys.

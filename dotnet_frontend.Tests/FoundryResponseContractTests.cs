@@ -49,6 +49,58 @@ public class FoundryResponseContractTests
         Assert.Equal(0, result.OutputTokens);
     }
 
+    [Fact]
+    public void ValidationCorrection_ReplacesGroupingOnlyWhenContractIsValid()
+    {
+        var original = new GroupedAnalysis
+        {
+            OverallSummary = "Original",
+            OverallSentiment = "mixed",
+            ParsedSuccessfully = true,
+        };
+        original.ThemeGroups.Add(new ThemeGroup
+        {
+            GroupName = "Original group",
+            GroupDescription = "Original description",
+            Count = 1,
+            SubmissionNumbers = [1],
+            StanceDistribution = new Dictionary<string, int> { ["mixed"] = 1 },
+        });
+
+        var corrected = FoundryAnalysisService.ApplyValidationResponseForTesting(
+            original,
+            """
+            {
+              "status": "corrected",
+              "collective_analysis": {
+                "overall_summary": "Corrected",
+                "theme_groups": [{
+                  "group_name": "Corrected group",
+                  "group_description": "Corrected description",
+                  "count": 1,
+                  "submission_numbers": [1],
+                  "stance_distribution": { "supportive": 1 },
+                  "common_arguments": []
+                }],
+                "patterns": [],
+                "recommendations": [],
+                "overall_sentiment": "supportive"
+              }
+            }
+            """,
+            expectedTotalComments: 1);
+
+        Assert.Equal("Corrected", corrected.OverallSummary);
+        Assert.Equal("Corrected group", corrected.ThemeGroups.Single().GroupName);
+
+        var rejected = FoundryAnalysisService.ApplyValidationResponseForTesting(
+            original,
+            """{"status":"corrected","collective_analysis":{"overall_summary":"Incomplete"}}""",
+            expectedTotalComments: 1);
+
+        Assert.Same(original, rejected);
+    }
+
       [Fact]
       public async Task Client_SendsResponsesApiAgentContractAndParsesResponse()
       {

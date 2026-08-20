@@ -1,0 +1,23 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "REGULATIONS_GOV_API_KEY": "your_regulations_gov_api_key_here",
+    "DOCUMENT_ID": "ED-2025-SCC-0481-0001",
+    "DOCUMENTINTELLIGENCE_ENDPOINT": "https://your-doc-intel-resource.cognitiveservices.azure.com/",
+    "FOUNDRY_PROJECT_ENDPOINT": "https://your-resource.cognitiveservices.azure.com/api/projects/your-project",
+    "CATEGORIZATION_AGENT_NAME": "your-categorization-agent-name",
+    "CATEGORIZATION_AGENT_VERSION": "1",
+    "CATEGORIZATION_AGENT_MODEL": "gpt-4o",
+    "GROUPING_AGENT_NAME": "your-grouping-agent-name",
+    "GROUPING_AGENT_VERSION": "1",
+    "GROUPING_AGENT_MODEL": "gpt-4o",
+    "VALIDATION_AGENT_NAME": "your-validation-agent-name",
+    "VALIDATION_AGENT_VERSION": "1",
+    "VALIDATION_AGENT_MODEL": "gpt-4o",
+    "BATCH_SIZE": "5",
+    "MAX_COMMENTS": "",
+    "AZURE_STORAGE_ACCOUNT_NAME": "your_storage_account_name"
+  }
+}
