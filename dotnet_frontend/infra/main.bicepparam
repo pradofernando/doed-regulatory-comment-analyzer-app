@@ -34,6 +34,7 @@ param provisionCosmosResources = readEnvironmentVariable('PROVISION_COSMOS_RESOU
 param cosmosAccountName = readEnvironmentVariable('COSMOS_ACCOUNT_NAME', '')
 
 param enablePayloadStorage = readEnvironmentVariable('ENABLE_PAYLOAD_STORAGE', 'true') == 'true'
+param analysisPayloadBlobContainerUri = readEnvironmentVariable('ANALYSIS_PAYLOAD_BLOB_CONTAINER_URI', '')
 param payloadOffloadThresholdBytes = 524288
 param enableAttachmentOcr = readEnvironmentVariable('ENABLE_ATTACHMENT_OCR', 'true') == 'true'
 param foundryInputUsdPerMillionTokens = readEnvironmentVariable('FOUNDRY_INPUT_USD_PER_MILLION_TOKENS', '0')
@@ -42,3 +43,6 @@ param alertEmail = readEnvironmentVariable('ALERT_EMAIL', '')
 
 param defaultDocumentId = 'ED-2025-SCC-0481-0001'
 param batchSize = 5
+param useFunctionAnalysisBackend = false
+param analysisFunctionBaseUrl = readEnvironmentVariable('ANALYSIS_FUNCTION_BASE_URL', '')
+param analysisFunctionKey = readEnvironmentVariable('ANALYSIS_FUNCTION_KEY', '')

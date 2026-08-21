@@ -3,7 +3,11 @@
 # azure-monitor-opentelemetry 
 
 azure-functions
+agent-framework-core==1.2.2
+agent-framework-openai==1.2.2
 agent-framework-foundry==1.2.2
+aiohttp>=3.10,<4
+azure-cosmos
 azure-ai-documentintelligence
 azure-identity
 azure-storage-blob

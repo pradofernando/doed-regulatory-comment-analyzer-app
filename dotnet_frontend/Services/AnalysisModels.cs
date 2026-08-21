@@ -58,6 +58,7 @@ public class GroupedAnalysis
 /// </summary>
 public class AnalysisRun
 {
+    [JsonIgnore] public Guid? PersistedId { get; set; }
     public string? SessionName { get; set; }
     public string DocumentId { get; set; } = string.Empty;
     public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;

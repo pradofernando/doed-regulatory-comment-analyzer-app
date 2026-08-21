@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "17427750425427521850"
+      "templateHash": "6027246012929111327"
     }
   },
   "parameters": {
@@ -45,6 +45,13 @@
       "maxValue": 100,
       "metadata": {
         "description": "Default GPT-4o model deployment capacity in thousands of tokens per minute."
+      }
+    },
+    "preferredAgentModelDeploymentName": {
+      "type": "string",
+      "defaultValue": "gpt-5.4",
+      "metadata": {
+        "description": "Preferred model deployment for Foundry agents. The deployment script falls back to the Bicep-managed GPT-4o deployment when this model is unavailable."
       }
     },
     "embeddingCapacity": {
@@ -120,6 +127,34 @@
       ],
       "metadata": {
         "description": "Function hosting mode. Premium uses Elastic Premium EP1. FlexConsumption uses FC1."
+      }
+    },
+    "cosmosAccountName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Existing Cosmos DB account name in this resource group, shared with the frontend. Leave empty to keep Blob-only scheduled processing and disable manual runs."
+      }
+    },
+    "cosmosDatabaseName": {
+      "type": "string",
+      "defaultValue": "doed-regulatory-comments",
+      "metadata": {
+        "description": "Cosmos DB database containing analysis runs."
+      }
+    },
+    "cosmosRunsContainerName": {
+      "type": "string",
+      "defaultValue": "analysis-runs",
+      "metadata": {
+        "description": "Cosmos DB container for analysis runs. Its partition key must be /id."
+      }
+    },
+    "cosmosSummariesContainerName": {
+      "type": "string",
+      "defaultValue": "analysis-run-summaries",
+      "metadata": {
+        "description": "Cosmos DB summary container. Its partition key must be /documentIdNormalized."
       }
     }
   },
@@ -396,7 +431,7 @@
             ],
             "supportCredentials": false
           },
-          "appSettings": "[concat(variables('premiumRuntimeAppSettings'), createArray(createObject('name', 'AzureWebJobsStorage__accountName', 'value', variables('storageAccountName')), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'APPINSIGHTS_INSTRUMENTATIONKEY', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString), createObject('name', 'REGULATIONS_GOV_API_KEY', 'value', format('@Microsoft.KeyVault(VaultName={0};SecretName=regulations-gov-api-key)', variables('keyVaultName'))), createObject('name', 'DOCUMENT_ID', 'value', parameters('documentId')), createObject('name', 'BATCH_SIZE', 'value', string(parameters('batchSize'))), createObject('name', 'MAX_COMMENTS', 'value', ''), createObject('name', 'AZURE_STORAGE_ACCOUNT_NAME', 'value', variables('storageAccountName')), createObject('name', 'DOCUMENTINTELLIGENCE_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('documentIntelligenceName')), '2023-10-01-preview').endpoint), createObject('name', 'FOUNDRY_PROJECT_ENDPOINT', 'value', variables('foundryProjectEndpoint')), createObject('name', 'CATEGORIZATION_AGENT_NAME', 'value', 'RegulatoryCommentCategorizationAgent'), createObject('name', 'CATEGORIZATION_AGENT_VERSION', 'value', '1'), createObject('name', 'CATEGORIZATION_AGENT_MODEL', 'value', 'gpt-4o'), createObject('name', 'GROUPING_AGENT_NAME', 'value', 'RegulatoryCommentGroupingAgent'), createObject('name', 'GROUPING_AGENT_VERSION', 'value', '1'), createObject('name', 'GROUPING_AGENT_MODEL', 'value', 'gpt-4o'), createObject('name', 'VALIDATION_AGENT_NAME', 'value', ''), createObject('name', 'VALIDATION_AGENT_VERSION', 'value', '1'), createObject('name', 'VALIDATION_AGENT_MODEL', 'value', 'gpt-4o')))]"
+          "appSettings": "[concat(variables('premiumRuntimeAppSettings'), createArray(createObject('name', 'AzureWebJobsStorage__accountName', 'value', variables('storageAccountName')), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'APPINSIGHTS_INSTRUMENTATIONKEY', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString), createObject('name', 'REGULATIONS_GOV_API_KEY', 'value', format('@Microsoft.KeyVault(VaultName={0};SecretName=regulations-gov-api-key)', variables('keyVaultName'))), createObject('name', 'DOCUMENT_ID', 'value', parameters('documentId')), createObject('name', 'BATCH_SIZE', 'value', string(parameters('batchSize'))), createObject('name', 'MAX_COMMENTS', 'value', ''), createObject('name', 'AZURE_STORAGE_ACCOUNT_NAME', 'value', variables('storageAccountName')), createObject('name', 'COSMOS_ENDPOINT', 'value', if(empty(parameters('cosmosAccountName')), '', format('https://{0}.documents.azure.com:443/', parameters('cosmosAccountName')))), createObject('name', 'COSMOS_DATABASE_NAME', 'value', parameters('cosmosDatabaseName')), createObject('name', 'COSMOS_RUNS_CONTAINER_NAME', 'value', parameters('cosmosRunsContainerName')), createObject('name', 'COSMOS_SUMMARIES_CONTAINER_NAME', 'value', parameters('cosmosSummariesContainerName')), createObject('name', 'ANALYSIS_PAYLOAD_CONTAINER_NAME', 'value', 'analysis-run-payloads'), createObject('name', 'ANALYSIS_PAYLOAD_OFFLOAD_THRESHOLD_BYTES', 'value', '524288'), createObject('name', 'DOCUMENTINTELLIGENCE_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('documentIntelligenceName')), '2023-10-01-preview').endpoint), createObject('name', 'FOUNDRY_PROJECT_ENDPOINT', 'value', variables('foundryProjectEndpoint')), createObject('name', 'CATEGORIZATION_AGENT_NAME', 'value', 'RegulatoryCommentCategorizationAgent'), createObject('name', 'CATEGORIZATION_AGENT_VERSION', 'value', '1'), createObject('name', 'CATEGORIZATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'GROUPING_AGENT_NAME', 'value', 'RegulatoryCommentGroupingAgent'), createObject('name', 'GROUPING_AGENT_VERSION', 'value', '1'), createObject('name', 'GROUPING_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'VALIDATION_AGENT_NAME', 'value', ''), createObject('name', 'VALIDATION_AGENT_VERSION', 'value', '1'), createObject('name', 'VALIDATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'ALLOWED_MODEL_DEPLOYMENTS', 'value', join(union(createArray(parameters('preferredAgentModelDeploymentName')), createArray('gpt-4o')), ','))))]"
         }
       },
       "dependsOn": [
@@ -421,6 +456,20 @@
       "dependsOn": [
         "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+      ]
+    },
+    {
+      "condition": "[not(empty(parameters('cosmosAccountName')))]",
+      "type": "Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments",
+      "apiVersion": "2024-05-15",
+      "name": "[format('{0}/{1}', parameters('cosmosAccountName'), guid(resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')), resourceId('Microsoft.Web/sites', variables('functionAppName')), 'cosmos-data-contributor'))]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2023-12-01', 'full').identity.principalId]",
+        "roleDefinitionId": "[format('{0}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002', resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName')))]",
+        "scope": "[resourceId('Microsoft.DocumentDB/databaseAccounts', parameters('cosmosAccountName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
       ]
     },
     {

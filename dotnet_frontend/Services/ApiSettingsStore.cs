@@ -69,6 +69,7 @@ public sealed class ApiSettingsStore
                     if (!string.IsNullOrWhiteSpace(fromFile.FollowUpAgentVersion)) initial.FollowUpAgentVersion = fromFile.FollowUpAgentVersion;
                     if (!string.IsNullOrWhiteSpace(fromFile.ModelDeploymentName)) initial.ModelDeploymentName = fromFile.ModelDeploymentName;
                     if (fromFile.BatchSize > 0) initial.BatchSize = fromFile.BatchSize;
+                    initial.RunValidation = fromFile.RunValidation;
                 }
             }
             catch
@@ -124,6 +125,7 @@ public sealed class ApiSettingsStore
                 FollowUpAgentVersion = string.IsNullOrWhiteSpace(updated.FollowUpAgentVersion) ? ApiSettings.DefaultAgentVersion : updated.FollowUpAgentVersion.Trim(),
                 ModelDeploymentName = string.IsNullOrWhiteSpace(updated.ModelDeploymentName) ? ApiSettings.DefaultModelDeploymentName : updated.ModelDeploymentName.Trim(),
                 BatchSize = updated.BatchSize > 0 ? updated.BatchSize : ApiSettings.DefaultBatchSize,
+                RunValidation = updated.RunValidation,
             };
 
             try
@@ -162,6 +164,7 @@ public sealed class ApiSettingsStore
         FollowUpAgentVersion = s.FollowUpAgentVersion,
         ModelDeploymentName = s.ModelDeploymentName,
         BatchSize = s.BatchSize,
+        RunValidation = s.RunValidation,
     };
 
     private static void ApplyEnvOverride(string? value, Action<string> assign)

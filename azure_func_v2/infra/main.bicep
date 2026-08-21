@@ -60,6 +60,9 @@ param location string = 'eastus'  // <-- CHANGE THIS TO DEPLOY TO A DIFFERENT RE
 @maxValue(100)
 param gptCapacity int = 10
 
+@description('Preferred model deployment for Foundry agents. The deployment script falls back to the Bicep-managed GPT-4o deployment when this model is unavailable.')
+param preferredAgentModelDeploymentName string = 'gpt-5.4'
+
 @description('text-embedding-3-large deployment capacity in thousands of tokens per minute.')
 @minValue(1)
 @maxValue(100)
@@ -100,6 +103,18 @@ param restoreFoundry bool = false
   'FlexConsumption'
 ])
 param hostingMode string = 'FlexConsumption'
+
+@description('Existing Cosmos DB account name in this resource group, shared with the frontend. Leave empty to keep Blob-only scheduled processing and disable manual runs.')
+param cosmosAccountName string = ''
+
+@description('Cosmos DB database containing analysis runs.')
+param cosmosDatabaseName string = 'doed-regulatory-comments'
+
+@description('Cosmos DB container for analysis runs. Its partition key must be /id.')
+param cosmosRunsContainerName string = 'analysis-runs'
+
+@description('Cosmos DB summary container. Its partition key must be /documentIdNormalized.')
+param cosmosSummariesContainerName string = 'analysis-run-summaries'
 
 // ============================================================================
 // VARIABLES
@@ -152,6 +167,10 @@ var premiumRuntimeAppSettings = usePremiumHosting ? [
 
 // User-assigned managed identity (pre-existing resource, kept for reference)
 var deploymentScriptIdentityName = 'id-deploy-${baseName}'
+
+resource sharedCosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' existing = if (!empty(cosmosAccountName)) {
+  name: cosmosAccountName
+}
 
 // ============================================================================
 // STORAGE ACCOUNT
@@ -558,6 +577,30 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: storageAccount.name
         }
         {
+          name: 'COSMOS_ENDPOINT'
+          value: empty(cosmosAccountName) ? '' : 'https://${cosmosAccountName}.documents.azure.com:443/'
+        }
+        {
+          name: 'COSMOS_DATABASE_NAME'
+          value: cosmosDatabaseName
+        }
+        {
+          name: 'COSMOS_RUNS_CONTAINER_NAME'
+          value: cosmosRunsContainerName
+        }
+        {
+          name: 'COSMOS_SUMMARIES_CONTAINER_NAME'
+          value: cosmosSummariesContainerName
+        }
+        {
+          name: 'ANALYSIS_PAYLOAD_CONTAINER_NAME'
+          value: 'analysis-run-payloads'
+        }
+        {
+          name: 'ANALYSIS_PAYLOAD_OFFLOAD_THRESHOLD_BYTES'
+          value: '524288'
+        }
+        {
           name: 'DOCUMENTINTELLIGENCE_ENDPOINT'
           value: documentIntelligence.properties.endpoint
         }
@@ -577,7 +620,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'CATEGORIZATION_AGENT_MODEL'
-          value: modelDeployment.name
+          value: preferredAgentModelDeploymentName
         }
         {
           name: 'GROUPING_AGENT_NAME'
@@ -589,7 +632,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'GROUPING_AGENT_MODEL'
-          value: modelDeployment.name
+          value: preferredAgentModelDeploymentName
         }
         {
           name: 'VALIDATION_AGENT_NAME'
@@ -601,7 +644,15 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'VALIDATION_AGENT_MODEL'
-          value: modelDeployment.name
+          value: preferredAgentModelDeploymentName
+        }
+        {
+          name: 'ALLOWED_MODEL_DEPLOYMENTS'
+          value: join(union([
+            preferredAgentModelDeploymentName
+          ], [
+            modelDeployment.name
+          ]), ',')
         }
       ])
     }
@@ -622,6 +673,16 @@ resource functionKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-0
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (!empty(cosmosAccountName)) {
+  parent: sharedCosmosAccount
+  name: guid(sharedCosmosAccount.id, functionApp.id, 'cosmos-data-contributor')
+  properties: {
+    principalId: functionApp.identity.principalId
+    roleDefinitionId: '${sharedCosmosAccount.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
+    scope: sharedCosmosAccount.id
   }
 }
 

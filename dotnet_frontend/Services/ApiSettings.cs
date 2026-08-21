@@ -55,6 +55,7 @@ public class ApiSettings
 
     public string ModelDeploymentName { get; set; } = DefaultModelDeploymentName;
     public int BatchSize { get; set; } = DefaultBatchSize;
+    public bool RunValidation { get; set; } = true;
 
     public bool IsUsingDefaultBaseUrl =>
         string.Equals(BaseUrl?.TrimEnd('/'), DefaultBaseUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);

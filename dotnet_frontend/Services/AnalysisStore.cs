@@ -12,6 +12,7 @@ public sealed class AnalysisStore
     public AnalysisRun? LastRun { get; set; }
     public bool IsRunning { get; set; }
     public AnalysisProgress? LastProgress { get; set; }
+    public Guid? CurrentJobId { get; set; }
 
     /// <summary>
     /// DB primary key of the run currently held in <see cref="LastRun"/>, if it has been persisted.

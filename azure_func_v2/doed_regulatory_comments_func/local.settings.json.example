@@ -9,15 +9,22 @@
     "FOUNDRY_PROJECT_ENDPOINT": "https://your-resource.cognitiveservices.azure.com/api/projects/your-project",
     "CATEGORIZATION_AGENT_NAME": "your-categorization-agent-name",
     "CATEGORIZATION_AGENT_VERSION": "1",
-    "CATEGORIZATION_AGENT_MODEL": "gpt-4o",
+    "CATEGORIZATION_AGENT_MODEL": "gpt-5.4",
     "GROUPING_AGENT_NAME": "your-grouping-agent-name",
     "GROUPING_AGENT_VERSION": "1",
-    "GROUPING_AGENT_MODEL": "gpt-4o",
+    "GROUPING_AGENT_MODEL": "gpt-5.4",
     "VALIDATION_AGENT_NAME": "your-validation-agent-name",
     "VALIDATION_AGENT_VERSION": "1",
-    "VALIDATION_AGENT_MODEL": "gpt-4o",
+    "VALIDATION_AGENT_MODEL": "gpt-5.4",
+    "ALLOWED_MODEL_DEPLOYMENTS": "gpt-5.4,gpt-4o",
     "BATCH_SIZE": "5",
     "MAX_COMMENTS": "",
-    "AZURE_STORAGE_ACCOUNT_NAME": "your_storage_account_name"
+    "AZURE_STORAGE_ACCOUNT_NAME": "your_storage_account_name",
+    "COSMOS_ENDPOINT": "https://your-cosmos-account.documents.azure.com:443/",
+    "COSMOS_DATABASE_NAME": "doed-regulatory-comments",
+    "COSMOS_RUNS_CONTAINER_NAME": "analysis-runs",
+    "COSMOS_SUMMARIES_CONTAINER_NAME": "analysis-run-summaries",
+    "ANALYSIS_PAYLOAD_CONTAINER_NAME": "analysis-run-payloads",
+    "ANALYSIS_PAYLOAD_OFFLOAD_THRESHOLD_BYTES": "524288"
   }
 }

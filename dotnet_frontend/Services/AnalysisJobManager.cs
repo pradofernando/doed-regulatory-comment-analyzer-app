@@ -135,17 +135,24 @@ public sealed class AnalysisJobManager : IDisposable
             job.Cts.Token.ThrowIfCancellationRequested();
             job.Run = run;
 
-            try
+            if (run.PersistedId is { } persistedId)
             {
-                job.SavedRunId = await repo.SaveRunAsync(run, job.Cts.Token).ConfigureAwait(false);
+                job.SavedRunId = persistedId;
             }
-            catch (OperationCanceledException) when (job.Cts.IsCancellationRequested)
+            else
             {
-                throw;
-            }
-            catch (Exception saveEx)
-            {
-                _logger.LogWarning(saveEx, "Failed to persist analysis run for document {DocId}.", job.DocumentId);
+                try
+                {
+                    job.SavedRunId = await repo.SaveRunAsync(run, job.Cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (job.Cts.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception saveEx)
+                {
+                    _logger.LogWarning(saveEx, "Failed to persist analysis run for document {DocId}.", job.DocumentId);
+                }
             }
 
             if (run.Succeeded)

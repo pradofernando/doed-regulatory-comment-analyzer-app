@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 import os
+import random
 import time
 import csv
 import io
@@ -15,12 +16,35 @@ from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
 from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential
+from analysis_requests import AnalysisRequestValidationError, create_analysis_request
+from cosmos_runs import (
+    CosmosRunStore,
+    build_analysis_document,
+    build_failed_analysis_document,
+    build_job_document,
+    derive_overall_sentiment,
+    utc_now,
+)
 
 app = func.FunctionApp()
 
 _document_intelligence_client: Optional[DocumentIntelligenceClient] = None
 _blob_service_client: Optional[BlobServiceClient] = None
+_cosmos_run_store: Optional[CosmosRunStore] = None
+_cosmos_run_store_initialized = False
 _FOUNDRY_AGENT_TIMEOUT_SECONDS = int(os.environ.get("FOUNDRY_AGENT_TIMEOUT_SECONDS", "180"))
+_FOUNDRY_THROTTLE_MAX_ATTEMPTS = max(1, int(os.environ.get("FOUNDRY_THROTTLE_MAX_ATTEMPTS", "5")))
+_FOUNDRY_THROTTLE_BASE_DELAY_SECONDS = max(
+    0.1,
+    float(os.environ.get("FOUNDRY_THROTTLE_BASE_DELAY_SECONDS", "60")),
+)
+_FOUNDRY_THROTTLE_MAX_DELAY_SECONDS = max(
+    _FOUNDRY_THROTTLE_BASE_DELAY_SECONDS,
+    float(os.environ.get("FOUNDRY_THROTTLE_MAX_DELAY_SECONDS", "120")),
+)
+_FOUNDRY_CALL_SEMAPHORE = asyncio.Semaphore(
+    max(1, int(os.environ.get("FOUNDRY_MAX_CONCURRENT_CALLS", "1")))
+)
 
 
 def get_document_intelligence_client() -> DocumentIntelligenceClient:
@@ -370,8 +394,8 @@ def extract_text_from_foundry_response(final_response: Any) -> str:
     return "".join(parts).strip()
 
 
-async def run_foundry_agent(agent: FoundryAgent, session: AgentSession, message: str) -> str:
-    """Run a Foundry agent with a timeout, returning the assembled text response."""
+async def _run_foundry_agent_once(agent: FoundryAgent, session: AgentSession, message: str) -> str:
+    """Run one Foundry agent attempt with a timeout."""
     async def _run() -> str:
         stream = agent.run(message, session=session, stream=True)
         streamed_parts: List[str] = []
@@ -392,6 +416,103 @@ async def run_foundry_agent(agent: FoundryAgent, session: AgentSession, message:
             _FOUNDRY_AGENT_TIMEOUT_SECONDS,
         )
         raise
+
+
+def _exception_chain(error: Exception):
+    current: Optional[BaseException] = error
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _is_foundry_throttling_error(error: Exception) -> bool:
+    throttling_markers = (
+        "rate limit",
+        "too many requests",
+        "tokens per minute",
+        "requests per minute",
+        "tpm",
+        "rpm",
+    )
+    for candidate in _exception_chain(error):
+        response = getattr(candidate, "response", None)
+        status_code = getattr(candidate, "status_code", None) or getattr(response, "status_code", None)
+        if status_code == 429:
+            return True
+        error_code = str(getattr(candidate, "code", "") or "").lower()
+        if error_code in {"429", "rate_limit_exceeded", "too_many_requests"}:
+            return True
+        message = str(candidate).lower()
+        if any(marker in message for marker in throttling_markers):
+            return True
+    return False
+
+
+def _retry_after_seconds(error: Exception) -> Optional[float]:
+    for candidate in _exception_chain(error):
+        response = getattr(candidate, "response", None)
+        headers = getattr(response, "headers", None) or getattr(candidate, "headers", None)
+        if not headers:
+            continue
+        normalized_headers = {str(name).lower(): value for name, value in headers.items()}
+
+        for header_name in ("retry-after-ms", "x-ms-retry-after-ms"):
+            try:
+                milliseconds = float(normalized_headers.get(header_name))
+                if milliseconds > 0:
+                    return milliseconds / 1000
+            except (TypeError, ValueError):
+                pass
+
+        try:
+            seconds = float(normalized_headers.get("retry-after"))
+            if seconds > 0:
+                return seconds
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _foundry_throttle_delay(error: Exception, attempt: int) -> float:
+    retry_after = _retry_after_seconds(error)
+    if retry_after is not None:
+        return min(retry_after, _FOUNDRY_THROTTLE_MAX_DELAY_SECONDS)
+
+    exponential_delay = min(
+        _FOUNDRY_THROTTLE_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1)),
+        _FOUNDRY_THROTTLE_MAX_DELAY_SECONDS,
+    )
+    jittered_delay = exponential_delay * random.uniform(1.0, 1.25)
+    return min(
+        max(_FOUNDRY_THROTTLE_BASE_DELAY_SECONDS, jittered_delay),
+        _FOUNDRY_THROTTLE_MAX_DELAY_SECONDS,
+    )
+
+
+async def run_foundry_agent(agent: FoundryAgent, session: AgentSession, message: str) -> str:
+    """Run a Foundry agent, backing off when the service throttles TPM or RPM."""
+    async with _FOUNDRY_CALL_SEMAPHORE:
+        for attempt in range(1, _FOUNDRY_THROTTLE_MAX_ATTEMPTS + 1):
+            try:
+                return await _run_foundry_agent_once(agent, session, message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                if not _is_foundry_throttling_error(error) or attempt >= _FOUNDRY_THROTTLE_MAX_ATTEMPTS:
+                    raise
+
+                delay = _foundry_throttle_delay(error, attempt)
+                logging.warning(
+                    "Foundry throttled the request (attempt %s/%s); retrying in %.1f seconds.",
+                    attempt,
+                    _FOUNDRY_THROTTLE_MAX_ATTEMPTS,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+
+    raise RuntimeError("Foundry retry loop ended without a result")
 
 def validate_and_normalize_grouped_analysis(analysis: Dict[str, Any], expected_total_comments: int) -> Dict[str, Any]:
     """Validate grouped analysis structure without changing agent-produced semantics."""
@@ -468,6 +589,10 @@ def validate_and_normalize_grouped_analysis(analysis: Dict[str, Any], expected_t
             len(categories),
         )
         analysis["total_categories"] = len(categories)
+
+    derived_sentiment = derive_overall_sentiment(analysis)
+    if derived_sentiment is not None:
+        analysis["overall_sentiment"] = derived_sentiment
 
     return analysis
 
@@ -687,6 +812,9 @@ async def categorize_with_agent(
                     "submission_number": idx,
                     "csv_row": idx,
                     "row_data": row_string,
+                    "comment_id": row.get("comment_id", ""),
+                    "text_source": "inline+attachment" if row.get("has_attachments") else "inline",
+                    "attachments_extracted": 1 if row.get("has_attachments") else 0,
                     "categorization": build_non_substantive_categorization(
                         "The submission did not include usable comment text or extractable attachment content."
                     )
@@ -713,6 +841,9 @@ async def categorize_with_agent(
                 "submission_number": idx,
                 "csv_row": idx,
                 "row_data": row_string,
+                "comment_id": row.get("comment_id", ""),
+                "text_source": "inline+attachment" if row.get("has_attachments") else "inline",
+                "attachments_extracted": 1 if row.get("has_attachments") else 0,
                 "categorization": categorization_json
             })
     
@@ -981,32 +1112,203 @@ def upload_to_blob(content: str, blob_name: str, storage_account_name: str, cont
 
 
 # ============================================================================
-# MAIN TIMER FUNCTION
+# FUNCTION TRIGGERS AND SHARED WORKER
 # ============================================================================
 
-@app.schedule(schedule="0 0 8 * * *", arg_name="myTimer", run_on_startup=False,
-              use_monitor=False)
-async def regulatory_comments_daily(myTimer: func.TimerRequest) -> None:
-    """
-    Azure Function that runs daily at 3AM EST (8AM UTC) to fetch and analyze regulatory comments.
-    
-    Complete workflow:
-    1. Fetch comments from Regulations.gov API
-    2. Extract text from attachments
-    3. Consolidate into CSV format
-    4. Categorize with AI agent
-    5. Group and analyze with AI agent
-    6. Save all outputs to Azure Blob Storage
-    """
+_ANALYSIS_QUEUE_NAME = "analysis-requests"
+
+
+def _optional_int_setting(name: str) -> Optional[int]:
+    value = os.environ.get(name)
+    return int(value) if value else None
+
+
+def _create_request(payload: Dict[str, Any], trigger_source: str) -> Dict[str, Any]:
+    default_models = {
+        "categorization": os.environ.get("CATEGORIZATION_AGENT_MODEL"),
+        "grouping": os.environ.get("GROUPING_AGENT_MODEL"),
+        "validation": os.environ.get("VALIDATION_AGENT_MODEL"),
+    }
+    configured_models = {
+        model.strip()
+        for model in os.environ.get("ALLOWED_MODEL_DEPLOYMENTS", "").split(",")
+        if model.strip()
+    }
+    configured_models.update(model for model in default_models.values() if model)
+
+    return create_analysis_request(
+        payload,
+        trigger_source=trigger_source,
+        default_document_id=os.environ.get("DOCUMENT_ID", "ED-2025-SCC-0481-0001"),
+        default_batch_size=int(os.environ.get("BATCH_SIZE", "5")),
+        default_max_comments=_optional_int_setting("MAX_COMMENTS"),
+        default_models=default_models,
+        allowed_models=configured_models,
+    )
+
+
+def _get_cosmos_run_store() -> Optional[CosmosRunStore]:
+    global _cosmos_run_store, _cosmos_run_store_initialized
+    if not _cosmos_run_store_initialized:
+        _cosmos_run_store = CosmosRunStore.from_environment()
+        _cosmos_run_store_initialized = True
+    return _cosmos_run_store
+
+
+@app.route(route="analysis-runs", methods=["POST"], auth_level=func.AuthLevel.FUNCTION)
+@app.queue_output(
+    arg_name="request_message",
+    queue_name=_ANALYSIS_QUEUE_NAME,
+    connection="AzureWebJobsStorage",
+)
+def submit_analysis_run(req: func.HttpRequest, request_message: func.Out[str]) -> func.HttpResponse:
+    try:
+        payload = req.get_json() if req.get_body() else {}
+        if not isinstance(payload, dict):
+            raise AnalysisRequestValidationError("The request body must be a JSON object.")
+        request = _create_request(payload, "manual")
+    except (AnalysisRequestValidationError, ValueError) as error:
+        return func.HttpResponse(
+            json.dumps({"error": str(error)}),
+            status_code=400,
+            mimetype="application/json",
+        )
+
+    run_store = _get_cosmos_run_store()
+    if run_store is None:
+        return func.HttpResponse(
+            json.dumps({"error": "Manual analysis is unavailable because COSMOS_ENDPOINT is not configured."}),
+            status_code=503,
+            mimetype="application/json",
+        )
+
+    run_store.save_job(build_job_document(request, "queued"))
+    request_message.set(json.dumps(request))
+    return func.HttpResponse(
+        json.dumps({
+            "runId": request["runId"],
+            "status": "queued",
+            "effectiveSettings": {
+                "documentId": request["documentId"],
+                "commentIds": request["commentIds"],
+                "maxComments": request["maxComments"],
+                "batchSize": request["batchSize"],
+                "models": request["models"],
+                "runValidation": request["runValidation"],
+            },
+        }),
+        status_code=202,
+        mimetype="application/json",
+    )
+
+
+@app.route(route="analysis-runs/{run_id}", methods=["GET"], auth_level=func.AuthLevel.FUNCTION)
+def get_analysis_run_status(req: func.HttpRequest) -> func.HttpResponse:
+    run_id = req.route_params.get("run_id", "").strip()
+    run_store = _get_cosmos_run_store()
+    if run_store is None:
+        return func.HttpResponse(
+            json.dumps({"error": "COSMOS_ENDPOINT is not configured."}),
+            status_code=503,
+            mimetype="application/json",
+        )
+
+    document = run_store.get(run_id)
+    if document is None:
+        return func.HttpResponse(
+            json.dumps({"error": "Analysis run not found."}),
+            status_code=404,
+            mimetype="application/json",
+        )
+
+    status = document.get("status")
+    if not status and document.get("type") == "analysisRun":
+        status = "succeeded" if document.get("succeeded") else "failed"
+    response = {
+        "runId": document["id"],
+        "status": status,
+        "documentId": document.get("documentId"),
+        "startedAt": document.get("startedAt"),
+        "completedAt": document.get("completedAt"),
+        "totalComments": document.get("totalComments"),
+        "succeeded": document.get("succeeded"),
+        "errorMessage": document.get("errorMessage"),
+    }
+    return func.HttpResponse(json.dumps(response), mimetype="application/json")
+
+
+@app.schedule(
+    schedule="0 0 8 * * *",
+    arg_name="myTimer",
+    run_on_startup=False,
+    use_monitor=False,
+)
+@app.queue_output(
+    arg_name="request_message",
+    queue_name=_ANALYSIS_QUEUE_NAME,
+    connection="AzureWebJobsStorage",
+)
+def regulatory_comments_daily(myTimer: func.TimerRequest, request_message: func.Out[str]) -> None:
     if myTimer.past_due:
-        logging.info('The timer is past due!')
-    
-    logging.info('Starting regulatory comments processing workflow...')
-    timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    
-    # Get configuration from environment variables
+        logging.info("The timer is past due.")
+
+    request = _create_request({}, "scheduled")
+    run_store = _get_cosmos_run_store()
+    if run_store is not None:
+        run_store.save_job(build_job_document(request, "queued"))
+    request_message.set(json.dumps(request))
+    logging.info("Queued scheduled analysis run %s.", request["runId"])
+
+
+@app.queue_trigger(
+    arg_name="request_message",
+    queue_name=_ANALYSIS_QUEUE_NAME,
+    connection="AzureWebJobsStorage",
+)
+async def process_analysis_run(request_message: func.QueueMessage) -> None:
+    request = json.loads(request_message.get_body().decode("utf-8"))
+    started_at = utc_now()
+    run_store = _get_cosmos_run_store()
+    if run_store is not None and not run_store.try_start(request["runId"], started_at):
+        logging.info(
+            "Skipping duplicate delivery for analysis run %s because it is already running or complete.",
+            request["runId"],
+        )
+        return
+    logging.info(
+        "Starting %s analysis run %s for document %s.",
+        request["triggerSource"],
+        request["runId"],
+        request["documentId"],
+    )
+    try:
+        result = await execute_analysis_request(request)
+        if run_store is not None:
+            run_store.save_analysis(build_analysis_document(
+                request,
+                result,
+                started_at=started_at,
+                completed_at=utc_now(),
+            ))
+    except Exception as error:
+        if run_store is not None:
+            run_store.save_analysis(build_failed_analysis_document(
+                request,
+                started_at=started_at,
+                completed_at=utc_now(),
+                error_message=str(error),
+            ))
+        raise
+
+
+async def execute_analysis_request(request: Dict[str, Any]) -> Dict[str, Any]:
+    timestamp = (
+        datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+        + f"_{request['runId'][:8]}"
+    )
+
     api_key = os.environ.get("REGULATIONS_GOV_API_KEY")
-    document_id = os.environ.get("DOCUMENT_ID", "ED-2025-SCC-0481-0001")
+    document_id = request["documentId"]
     foundry_project_endpoint = (
         os.environ.get("FOUNDRY_PROJECT_ENDPOINT")
         or os.environ.get("AZURE_AI_AGENT_ENDPOINT")
@@ -1014,15 +1316,20 @@ async def regulatory_comments_daily(myTimer: func.TimerRequest) -> None:
     )
     categorization_agent_name = os.environ.get("CATEGORIZATION_AGENT_NAME") or os.environ.get("CATEGORIZATION_AGENT_ID")
     categorization_agent_version = os.environ.get("CATEGORIZATION_AGENT_VERSION")
-    categorization_agent_model = os.environ.get("CATEGORIZATION_AGENT_MODEL")
+    categorization_agent_model = request["models"]["categorization"]
     grouping_agent_name = os.environ.get("GROUPING_AGENT_NAME") or os.environ.get("GROUPING_AGENT_ID")
     grouping_agent_version = os.environ.get("GROUPING_AGENT_VERSION")
-    grouping_agent_model = os.environ.get("GROUPING_AGENT_MODEL")
-    validation_agent_name = os.environ.get("VALIDATION_AGENT_NAME") or os.environ.get("VALIDATION_AGENT_ID")
+    grouping_agent_model = request["models"]["grouping"]
+    validation_agent_name = (
+        os.environ.get("VALIDATION_AGENT_NAME") or os.environ.get("VALIDATION_AGENT_ID")
+        if request["runValidation"]
+        else None
+    )
     validation_agent_version = os.environ.get("VALIDATION_AGENT_VERSION")
-    validation_agent_model = os.environ.get("VALIDATION_AGENT_MODEL")
-    batch_size = int(os.environ.get("BATCH_SIZE", "5"))
-    max_comments = int(os.environ.get("MAX_COMMENTS")) if os.environ.get("MAX_COMMENTS") else None
+    validation_agent_model = request["models"]["validation"]
+    batch_size = request["batchSize"]
+    max_comments = request["maxComments"]
+    requested_comment_ids = request.get("commentIds", [])
     storage_account_name = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
     document_intelligence_endpoint = (
         os.environ.get("DOCUMENTINTELLIGENCE_ENDPOINT")
@@ -1030,30 +1337,24 @@ async def regulatory_comments_daily(myTimer: func.TimerRequest) -> None:
     )
     
     if not api_key:
-        logging.error("REGULATIONS_GOV_API_KEY not found in environment variables")
-        return
+        raise ValueError("REGULATIONS_GOV_API_KEY not found in environment variables")
     
     if not storage_account_name:
-        logging.error("AZURE_STORAGE_ACCOUNT_NAME not found in environment variables")
-        return
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME not found in environment variables")
 
     if not document_intelligence_endpoint:
-        logging.error(
+        raise ValueError(
             "DOCUMENTINTELLIGENCE_ENDPOINT or AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT not found in environment variables"
         )
-        return
 
     if not foundry_project_endpoint:
-        logging.error("FOUNDRY_PROJECT_ENDPOINT not found in environment variables")
-        return
+        raise ValueError("FOUNDRY_PROJECT_ENDPOINT not found in environment variables")
 
     if not categorization_agent_name:
-        logging.error("CATEGORIZATION_AGENT_NAME not found in environment variables")
-        return
+        raise ValueError("CATEGORIZATION_AGENT_NAME not found in environment variables")
 
     if not grouping_agent_name:
-        logging.error("GROUPING_AGENT_NAME not found in environment variables")
-        return
+        raise ValueError("GROUPING_AGENT_NAME not found in environment variables")
     
     try:
         # Phase 1: Fetch comments
@@ -1062,15 +1363,29 @@ async def regulatory_comments_daily(myTimer: func.TimerRequest) -> None:
         else:
             logging.info(f"Phase 1: Fetching all comments for document {document_id}")
         
-        comments = fetch_comments_from_api(document_id, api_key, max_comments=max_comments)
+        fetch_limit = None if requested_comment_ids else max_comments
+        comments = fetch_comments_from_api(document_id, api_key, max_comments=fetch_limit)
         
         if not comments:
             logging.warning("No comments found. Trying with docket filter...")
-            comments = fetch_comments_from_api(document_id, api_key, max_comments=max_comments, use_docket_filter=True)
+            comments = fetch_comments_from_api(
+                document_id,
+                api_key,
+                max_comments=fetch_limit,
+                use_docket_filter=True,
+            )
         
         if not comments:
-            logging.error("No comments found with either method")
-            return
+            raise ValueError(f"No comments found for document {document_id} with either filter.")
+
+        if requested_comment_ids:
+            requested_ids = set(requested_comment_ids)
+            comments = [comment for comment in comments if comment.get("id") in requested_ids]
+            missing_ids = requested_ids - {comment.get("id") for comment in comments}
+            if missing_ids:
+                raise ValueError(
+                    f"Could not find {len(missing_ids)} requested comment(s) for document {document_id}."
+                )
         
         logging.info(f"Fetched {len(comments)} comments")
         
@@ -1136,6 +1451,14 @@ async def regulatory_comments_daily(myTimer: func.TimerRequest) -> None:
         
         logging.info(f"Workflow completed successfully! Processed {len(csv_rows)} comments")
         logging.info(f"All outputs saved to Azure Blob Storage with timestamp {timestamp}")
+        return {
+            "runId": request["runId"],
+            "documentId": document_id,
+            "timestamp": timestamp,
+            "totalComments": len(categorizations),
+            "categorizations": categorizations,
+            "groupedAnalysis": grouped_analysis,
+        }
         
     except Exception as e:
         logging.error(f"Error in workflow: {e}", exc_info=True)

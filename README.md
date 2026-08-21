@@ -2,7 +2,7 @@
 
 A web app that pulls **public comments** from [Regulations.gov](https://www.regulations.gov) and uses **Azure AI Foundry agents** to read them, categorize each one, and produce a single combined analysis. Built so a non-technical user can run an entire policy-comment analysis from a browser.
 
-> **Status:** the **.NET 9 Blazor web app** in `dotnet_frontend/` is the primary tool. Everything else in this repo (the Python scripts at the root + the `azure_func/` Function App) is the earlier, command-line version of the same workflow — kept for reference and for batch jobs.
+> **Status:** the **.NET 9 Blazor web app** is the user experience and the **`azure_func_v2/` Function App** owns scheduled and manual analysis execution. The root Python scripts are retained as a standalone legacy pipeline.
 
 ---
 
@@ -29,7 +29,7 @@ The web app includes the following operational and scalability work:
 - **Health and alerts:** `/health/live`, persistence-aware `/health/ready`, App Service health probing, and Azure Monitor alerts for HTTP 5xx and sustained response latency.
 - **Quality gates:** unit, repository, mocked HTTP contract, job cancellation, host integration, deterministic AI contract evaluation, NuGet vulnerability auditing, and Bicep/Bicep-parameter compilation in GitHub Actions.
 
-The latest validated local suite contains 90 tests. The exact count can grow as coverage is added; CI is the source of truth.
+The latest validated local suite contains 91 .NET tests plus Function contract tests. The exact count can grow as coverage is added; CI is the source of truth.
 
 ---
 
@@ -50,10 +50,6 @@ The latest validated local suite contains 90 tests. The exact count can grow as 
 │   ├── doed_regulatory_comments_func/
 │   └── infra/                        ← Bicep, prompt-agent creation, and deployment scripts.
 │
-├── azure_func/                       ← Legacy Python Azure Functions implementation retained for reference.
-│   ├── doed_regulatory_comments_func/
-│   └── infra/                        ← Bicep template for the Function-based deployment.
-│
 ├── fetch_regulations_comments.py     ← Standalone Python scripts (the original pipeline).
 ├── consolidate_comments_to_csv.py
 ├── process_csv_rows.py
@@ -67,7 +63,7 @@ The latest validated local suite contains 90 tests. The exact count can grow as 
 └── .gitignore
 ```
 
-You'll spend 99% of your time in `dotnet_frontend/`.
+Most UI work lives in `dotnet_frontend/`; production analysis execution lives in `azure_func_v2/`.
 
 ---
 
@@ -133,17 +129,24 @@ Four persistence profiles are supported:
 | Existing Cosmos DB | Reuse an externally managed Cosmos account. |
 | Template-managed serverless Cosmos DB | Provision a new account, aggregate container, summary container, and data-plane RBAC. |
 
-The root deployment orchestrates Function v2 and the frontend. SQLite remains the default. To provision and use serverless Cosmos DB for frontend analysis history:
+The root deployment orchestrates Function v2 and the frontend. It now defaults to a shared, template-managed serverless Cosmos account, enables Function-owned analysis, configures Function-key authentication, assigns managed-identity access, and uses Function Blob Storage for oversized payloads:
 
 ```powershell
 .\deploy.ps1 `
-	-RegulationsGovApiKey $env:REGS_API_KEY `
-	-PersistenceProvider Cosmos `
-	-ProvisionCosmosResources `
-	-EnablePayloadStorage
+	-RegulationsGovApiKey $env:REGS_API_KEY
 ```
 
-Use `-CosmosEndpoint` instead of `-ProvisionCosmosResources` when targeting an existing Cosmos account.
+To retain existing Cosmos results, pass the existing endpoint and account name. Add `-CosmosResourceGroupName` when it is not the frontend resource group:
+
+```powershell
+.\deploy.ps1 `
+    -RegulationsGovApiKey $env:REGS_API_KEY `
+    -CosmosEndpoint "https://<account>.documents.azure.com:443/" `
+    -CosmosAccountName "<account>" `
+    -CosmosResourceGroupName "<resource-group>"
+```
+
+The Function accepts manual submissions at `POST /api/analysis-runs`, queues them with scheduled runs, persists status/results to Cosmos, and offloads categorization payloads above 512 KB to Blob Storage. The frontend receives the Function URL/key as server-side settings and reads completed records through its existing Cosmos repository.
 
 The canonical deployment guide is [dotnet_frontend/DEPLOYMENT.md](dotnet_frontend/DEPLOYMENT.md). It includes:
 
@@ -214,7 +217,7 @@ This repo is intentionally clean of secrets. The following are **gitignored** an
 
 Template versions live alongside them: [`.env.example`](.env.example) and [`azure_func_v2/doed_regulatory_comments_func/local.settings.json.example`](azure_func_v2/doed_regulatory_comments_func/local.settings.json.example).
 
-If you fork or clone this for your own org, double-check that any default endpoint URLs in source files (e.g. `dotnet_frontend/Services/ApiSettings.cs`, `azure_func/infra/main.bicep`) are still empty/generic before sharing.
+If you fork or clone this for your own org, double-check that any default endpoint URLs in source files such as `dotnet_frontend/Services/ApiSettings.cs` are still empty or generic before sharing.
 
 > Production warning: the current Bicep template secures Azure service calls with managed identity, but it does **not** configure end-user authentication or private networking. Enable App Service Authentication with Microsoft Entra ID or restrict ingress before exposing the app. The Settings page changes global runtime settings and can persist an API key locally, so it must not remain publicly writable.
 
@@ -237,7 +240,7 @@ python consolidate_comments_to_csv.py    # 2. extract attachment text into a CSV
 python process_csv_rows.py               # 3. categorize + group via Azure AI agents
 ```
 
-Deployment for the current Function App is in [`azure_func_v2/README.md`](azure_func_v2/README.md). The legacy implementation remains under [`azure_func/`](azure_func/).
+Deployment for the current Function App is in [`azure_func_v2/README.md`](azure_func_v2/README.md).
 
 ---
 

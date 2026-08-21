@@ -259,6 +259,9 @@ values, not a recommendation for every environment.
 | `COSMOS_CREATE_IF_NOT_EXISTS` | No | `false` | Let the app attempt database/container creation at startup. Prefer IaC. |
 | `PROVISION_COSMOS_RESOURCES` | No | `false` | Provision serverless Cosmos in this template. Set provider to `Cosmos` too. |
 | `COSMOS_ACCOUNT_NAME` | No | Generated | Optional globally unique account name for provisioned Cosmos. |
+| `ANALYSIS_FUNCTION_BASE_URL` | Function backend only | Empty | HTTPS base URL of the Function App. |
+| `ANALYSIS_FUNCTION_KEY` | Function backend only | Empty | Server-side Function key; never expose it to browser code. |
+| `ANALYSIS_PAYLOAD_BLOB_CONTAINER_URI` | Function backend only | Empty | Private Function-storage container used to hydrate offloaded categorization payloads. |
 
 ### Optional services and operations
 
@@ -279,6 +282,8 @@ These Bicep settings are currently edited in `main.bicepparam` rather than set t
 | `defaultDocumentId` | `ED-2025-SCC-0481-0001` | UI default. |
 | `batchSize` | `5` | Grouping batch size, 1-20. |
 | `payloadOffloadThresholdBytes` | `524288` | Cosmos raw-payload offload threshold. |
+
+For the integrated Function-owned analysis topology, prefer the repository-root `deploy.ps1`. It resolves these three backend settings, creates the payload container, and applies Cosmos and Blob data-plane roles automatically. Direct `azd` deployment remains available for frontend-only or manually managed environments.
 
 ## Step 5: Configure persistence
 

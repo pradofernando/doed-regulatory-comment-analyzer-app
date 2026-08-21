@@ -43,7 +43,7 @@ param(
 
     [Parameter(Mandatory=$false)]
     [ValidateSet('Sqlite', 'AzureSql', 'Cosmos')]
-    [string]$PersistenceProvider = "Sqlite",
+    [string]$PersistenceProvider = "Cosmos",
 
     [Parameter(Mandatory=$false)]
     [string]$AnalysisDbConnectionString = "",
@@ -62,6 +62,9 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$CosmosAccountName = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$CosmosResourceGroupName = "",
 
     [Parameter(Mandatory=$false)]
     [switch]$CosmosCreateIfNotExists,
@@ -112,6 +115,9 @@ $env:AZURE_CORE_ONLY_SHOW_ERRORS = 'true'
 if ([string]::IsNullOrWhiteSpace($FrontendResourceGroupName)) {
     $FrontendResourceGroupName = $ResourceGroupName
 }
+if ([string]::IsNullOrWhiteSpace($CosmosResourceGroupName)) {
+    $CosmosResourceGroupName = $FrontendResourceGroupName
+}
 
 if ([string]::IsNullOrWhiteSpace($RegulationsGovApiKey)) {
     throw "RegulationsGovApiKey is required. Pass -RegulationsGovApiKey or set REGS_API_KEY."
@@ -120,8 +126,15 @@ if ([string]::IsNullOrWhiteSpace($RegulationsGovApiKey)) {
 if ($ProvisionCosmosResources -and $PersistenceProvider -ne 'Cosmos') {
     throw "ProvisionCosmosResources requires -PersistenceProvider Cosmos."
 }
-if ($PersistenceProvider -eq 'Cosmos' -and -not $ProvisionCosmosResources -and [string]::IsNullOrWhiteSpace($CosmosEndpoint)) {
-    throw "CosmosEndpoint is required for an existing Cosmos account. Pass -CosmosEndpoint or use -ProvisionCosmosResources."
+if ($PersistenceProvider -eq 'Cosmos' -and [string]::IsNullOrWhiteSpace($CosmosEndpoint)) {
+    $ProvisionCosmosResources = $true
+}
+if ($PersistenceProvider -eq 'Cosmos' -and -not [string]::IsNullOrWhiteSpace($CosmosEndpoint) -and [string]::IsNullOrWhiteSpace($CosmosAccountName)) {
+    try {
+        $CosmosAccountName = ([uri]$CosmosEndpoint).Host.Split('.')[0]
+    } catch {
+        throw "CosmosEndpoint must be an absolute Cosmos DB endpoint URL."
+    }
 }
 if ($PersistenceProvider -eq 'AzureSql' -and [string]::IsNullOrWhiteSpace($AnalysisDbConnectionString)) {
     throw "AnalysisDbConnectionString is required when PersistenceProvider is AzureSql."
@@ -227,6 +240,7 @@ if (-not $SkipFunctionDeployment) {
     Write-Host "Step 1/4: Deploying Azure Function v2 stack" -ForegroundColor Yellow
     Write-Host "============================================" -ForegroundColor Yellow
 
+    $agentDeploymentOutputPath = Join-Path $env:TEMP ("doed-agent-deployment-{0}.json" -f ([guid]::NewGuid().ToString('N')))
     $functionArgs = @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
@@ -238,7 +252,8 @@ if (-not $SkipFunctionDeployment) {
         '-DocumentId', $DocumentId,
         '-BatchSize', [string]$BatchSize,
         '-GptCapacity', [string]$GptCapacity,
-        '-EmbeddingCapacity', [string]$EmbeddingCapacity
+        '-EmbeddingCapacity', [string]$EmbeddingCapacity,
+        '-AgentDeploymentOutputPath', $agentDeploymentOutputPath
     )
 
     if (-not [string]::IsNullOrWhiteSpace($DeploymentSuffix)) {
@@ -254,11 +269,27 @@ if (-not $SkipFunctionDeployment) {
     $powerShellExe = Get-CurrentPowerShellPath
     & $powerShellExe @functionArgs
     if ($LASTEXITCODE -eq 2) {
+        Remove-Item $agentDeploymentOutputPath -Force -ErrorAction SilentlyContinue
         Write-Host "Function deployment publish was already in progress, and you chose to exit. No frontend deployment was started." -ForegroundColor Yellow
         exit 0
     }
     if ($LASTEXITCODE -ne 0) {
+        Remove-Item $agentDeploymentOutputPath -Force -ErrorAction SilentlyContinue
         throw "Azure Function v2 deployment failed."
+    }
+
+    if (-not (Test-Path $agentDeploymentOutputPath)) {
+        throw "Function deployment completed without the Foundry agent deployment manifest."
+    }
+    try {
+        $agentDeployment = Get-Content -Path $agentDeploymentOutputPath -Raw | ConvertFrom-Json
+        $deployedFollowUpAgentName = [string]$agentDeployment.followUpAgent.name
+        $deployedFollowUpAgentVersion = [string]$agentDeployment.followUpAgent.version
+        if ([string]::IsNullOrWhiteSpace($deployedFollowUpAgentName) -or [string]::IsNullOrWhiteSpace($deployedFollowUpAgentVersion)) {
+            throw "Foundry agent deployment manifest did not contain the follow-up agent name and version."
+        }
+    } finally {
+        Remove-Item $agentDeploymentOutputPath -Force -ErrorAction SilentlyContinue
     }
 } else {
     Write-Host "Skipping Azure Function v2 deployment by request." -ForegroundColor Yellow
@@ -302,6 +333,49 @@ $groupingAgentVersion = Get-RequiredSetting -Settings $functionSettings -Name 'G
 $validationAgentName = Get-OptionalSetting -Settings $functionSettings -Name 'VALIDATION_AGENT_NAME'
 $validationAgentVersion = Get-OptionalSetting -Settings $functionSettings -Name 'VALIDATION_AGENT_VERSION' -Default 'latest'
 $modelDeploymentName = Get-OptionalSetting -Settings $functionSettings -Name 'CATEGORIZATION_AGENT_MODEL' -Default 'gpt-4o'
+$functionStorageAccountName = Get-RequiredSetting -Settings $functionSettings -Name 'AZURE_STORAGE_ACCOUNT_NAME'
+$functionAppUrl = "https://$functionAppName.azurewebsites.net"
+$useFunctionAnalysisBackend = $PersistenceProvider -eq 'Cosmos'
+$functionKey = ''
+if ($useFunctionAnalysisBackend) {
+    $functionKey = az functionapp keys list `
+        --name $functionAppName `
+        --resource-group $ResourceGroupName `
+        --query 'functionKeys.default' `
+        -o tsv `
+        --only-show-errors
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($functionKey)) {
+        throw "Could not retrieve the default Function key for '$functionAppName'."
+    }
+}
+$analysisPayloadContainerName = 'analysis-run-payloads'
+$analysisPayloadContainerUri = "https://$functionStorageAccountName.blob.core.windows.net/$analysisPayloadContainerName"
+
+if ($SkipFunctionDeployment -and [string]::IsNullOrWhiteSpace($FollowUpAgentName)) {
+    $existingFrontendAppName = az resource list `
+        --resource-group $FrontendResourceGroupName `
+        --resource-type 'Microsoft.Web/sites' `
+        --query "[?starts_with(name, '$FrontendBaseName-app-')].name | [0]" `
+        -o tsv
+    if (-not [string]::IsNullOrWhiteSpace($existingFrontendAppName)) {
+        $deployedFollowUpAgentName = az webapp config appsettings list `
+            --name $existingFrontendAppName `
+            --resource-group $FrontendResourceGroupName `
+            --query "[?name=='Api__FollowUpAgentName'].value | [0]" `
+            -o tsv
+        $deployedFollowUpAgentVersion = az webapp config appsettings list `
+            --name $existingFrontendAppName `
+            --resource-group $FrontendResourceGroupName `
+            --query "[?name=='Api__FollowUpAgentVersion'].value | [0]" `
+            -o tsv
+    }
+}
+
+$effectiveFollowUpAgentName = if ([string]::IsNullOrWhiteSpace($FollowUpAgentName)) { $deployedFollowUpAgentName } else { $FollowUpAgentName }
+$effectiveFollowUpAgentVersion = if ([string]::IsNullOrWhiteSpace($FollowUpAgentName)) { $deployedFollowUpAgentVersion } else { $FollowUpAgentVersion }
+if (-not [string]::IsNullOrWhiteSpace($effectiveFollowUpAgentName) -and [string]::IsNullOrWhiteSpace($effectiveFollowUpAgentVersion)) {
+    $effectiveFollowUpAgentVersion = 'latest'
+}
 
 $foundryProjectResourceId = az resource list `
     --resource-group $ResourceGroupName `
@@ -321,6 +395,11 @@ if (-not [string]::IsNullOrWhiteSpace($validationAgentName)) {
     Write-Host "Validation agent:          $validationAgentName v$validationAgentVersion" -ForegroundColor White
 } else {
     Write-Host "Validation agent:          not configured" -ForegroundColor Yellow
+}
+if (-not [string]::IsNullOrWhiteSpace($effectiveFollowUpAgentName)) {
+    Write-Host "Follow-up Q&A agent:       $effectiveFollowUpAgentName v$effectiveFollowUpAgentVersion" -ForegroundColor White
+} else {
+    Write-Host "Follow-up Q&A agent:       not configured" -ForegroundColor Yellow
 }
 
 Write-Host ""
@@ -350,8 +429,8 @@ try {
             groupingAgentVersion = @{ value = $groupingAgentVersion }
             validationAgentName = @{ value = $validationAgentName }
             validationAgentVersion = @{ value = $validationAgentVersion }
-            followUpAgentName = @{ value = $FollowUpAgentName }
-            followUpAgentVersion = @{ value = $FollowUpAgentVersion }
+            followUpAgentName = @{ value = $effectiveFollowUpAgentName }
+            followUpAgentVersion = @{ value = $effectiveFollowUpAgentVersion }
             modelDeploymentName = @{ value = $modelDeploymentName }
             defaultDocumentId = @{ value = $DocumentId }
             batchSize = @{ value = $BatchSize }
@@ -365,7 +444,11 @@ try {
             cosmosCreateIfNotExists = @{ value = $CosmosCreateIfNotExists.IsPresent }
             provisionCosmosResources = @{ value = $ProvisionCosmosResources.IsPresent }
             enablePayloadStorage = @{ value = $EnablePayloadStorage.IsPresent }
+            analysisPayloadBlobContainerUri = @{ value = $analysisPayloadContainerUri }
             enableAttachmentOcr = @{ value = $EnableAttachmentOcr.IsPresent }
+            useFunctionAnalysisBackend = @{ value = $useFunctionAnalysisBackend }
+            analysisFunctionBaseUrl = @{ value = $functionAppUrl }
+            analysisFunctionKey = @{ value = $functionKey }
         }
     }
     $frontendParameters | ConvertTo-Json -Depth 10 | Set-Content -Path $frontendParametersFile -Encoding UTF8
@@ -402,6 +485,8 @@ try {
     $webAppName = $frontendOutputs.webAppName.value
     $webAppUrl = $frontendOutputs.webAppUrl.value
     $webAppPrincipalId = $frontendOutputs.webAppPrincipalId.value
+    $CosmosEndpoint = $frontendOutputs.effectiveCosmosEndpoint.value
+    $CosmosAccountName = $frontendOutputs.effectiveCosmosAccountName.value
 } finally {
     if (Test-Path $frontendParametersFile) {
         Remove-Item $frontendParametersFile -Force -ErrorAction SilentlyContinue
@@ -410,6 +495,101 @@ try {
 
 if ([string]::IsNullOrWhiteSpace($webAppName) -or [string]::IsNullOrWhiteSpace($webAppPrincipalId)) {
     throw "Frontend deployment completed without expected webAppName/webAppPrincipalId outputs."
+}
+if ($useFunctionAnalysisBackend) {
+    if ([string]::IsNullOrWhiteSpace($CosmosEndpoint) -or [string]::IsNullOrWhiteSpace($CosmosAccountName)) {
+        throw "Frontend deployment completed without a usable Cosmos endpoint and account name."
+    }
+
+    Write-Host "Wiring shared Cosmos and payload storage access..." -ForegroundColor Yellow
+    $functionPrincipalId = az functionapp identity show `
+    --name $functionAppName `
+    --resource-group $ResourceGroupName `
+    --query principalId `
+    -o tsv `
+    --only-show-errors
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($functionPrincipalId)) {
+        throw "Could not resolve the Function App managed identity."
+    }
+
+    $cosmosAccountId = az cosmosdb show `
+    --name $CosmosAccountName `
+    --resource-group $CosmosResourceGroupName `
+    --query id `
+    -o tsv `
+    --only-show-errors
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($cosmosAccountId)) {
+        throw "Could not resolve Cosmos account '$CosmosAccountName' in '$CosmosResourceGroupName'."
+    }
+    $cosmosContributorRoleId = "$cosmosAccountId/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002"
+    foreach ($principalId in @($functionPrincipalId, $webAppPrincipalId)) {
+        $existingCosmosRole = az cosmosdb sql role assignment list `
+        --account-name $CosmosAccountName `
+        --resource-group $CosmosResourceGroupName `
+        --query "[?principalId=='$principalId'].id | [0]" `
+        -o tsv `
+        --only-show-errors
+        if ([string]::IsNullOrWhiteSpace($existingCosmosRole)) {
+            Invoke-NativeChecked -Command 'az' -Arguments @(
+                'cosmosdb', 'sql', 'role', 'assignment', 'create',
+                '--account-name', $CosmosAccountName,
+                '--resource-group', $CosmosResourceGroupName,
+                '--scope', '/',
+                '--principal-id', $principalId,
+                '--role-definition-id', $cosmosContributorRoleId,
+                '--output', 'none'
+            ) -FailureMessage "Failed to grant Cosmos data access to principal '$principalId'."
+        }
+    }
+
+    Invoke-NativeChecked -Command 'az' -Arguments @(
+    'functionapp', 'config', 'appsettings', 'set',
+    '--name', $functionAppName,
+    '--resource-group', $ResourceGroupName,
+    '--settings',
+    "COSMOS_ENDPOINT=$CosmosEndpoint",
+    "COSMOS_DATABASE_NAME=$CosmosDatabaseName",
+    "COSMOS_RUNS_CONTAINER_NAME=$CosmosContainerName",
+    "COSMOS_SUMMARIES_CONTAINER_NAME=$CosmosSummaryContainerName",
+    "ANALYSIS_PAYLOAD_CONTAINER_NAME=$analysisPayloadContainerName",
+    '--output', 'none'
+    ) -FailureMessage "Failed to configure the Function App for shared Cosmos persistence."
+
+    Invoke-NativeChecked -Command 'az' -Arguments @(
+    'storage', 'container', 'create',
+    '--account-name', $functionStorageAccountName,
+    '--name', $analysisPayloadContainerName,
+    '--auth-mode', 'login',
+    '--output', 'none'
+    ) -FailureMessage "Failed to create the analysis payload container."
+
+    $functionStorageId = az storage account show `
+    --name $functionStorageAccountName `
+    --resource-group $ResourceGroupName `
+    --query id `
+    -o tsv `
+    --only-show-errors
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($functionStorageId)) {
+        throw "Could not resolve Function storage account '$functionStorageAccountName'."
+    }
+    $existingPayloadRole = az role assignment list `
+    --assignee $webAppPrincipalId `
+    --role 'Storage Blob Data Contributor' `
+    --scope $functionStorageId `
+    --query '[0].id' `
+    -o tsv `
+    --only-show-errors
+    if ([string]::IsNullOrWhiteSpace($existingPayloadRole)) {
+        Invoke-NativeChecked -Command 'az' -Arguments @(
+        'role', 'assignment', 'create',
+        '--assignee-object-id', $webAppPrincipalId,
+        '--assignee-principal-type', 'ServicePrincipal',
+        '--role', 'Storage Blob Data Contributor',
+        '--scope', $functionStorageId,
+        '--output', 'none',
+        '--only-show-errors'
+        ) -FailureMessage "Failed to grant the frontend access to Function payload blobs."
+    }
 }
 
 Write-Host "Granting web app managed identity access to Foundry agents..." -ForegroundColor Yellow

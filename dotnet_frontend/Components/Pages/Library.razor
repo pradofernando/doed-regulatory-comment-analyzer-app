@@ -225,6 +225,9 @@ else
             Store.DocumentId = run.DocumentId;
             Store.LastRun = run;
             Store.LoadedRunId = id;
+            Store.CurrentJobId = null;
+            Store.IsRunning = false;
+            Store.LastProgress = null;
             // Loaded runs don't have the original CommentResource list available, so
             // clear staged inputs to avoid the Analysis page thinking a re-run is queued.
             Store.Comments = Array.Empty<CommentResource>();

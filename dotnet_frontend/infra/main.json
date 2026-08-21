@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "12186966794454165500"
+      "templateHash": "3884468935884135796"
     }
   },
   "parameters": {
@@ -139,6 +139,27 @@
         "description": "Default batch size sent to the grouping agent (1-20)."
       }
     },
+    "useFunctionAnalysisBackend": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Delegate analysis execution to the Azure Function instead of running Foundry agents in the web app."
+      }
+    },
+    "analysisFunctionBaseUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Base HTTPS URL of the analysis Function App, for example https://func-example.azurewebsites.net/."
+      }
+    },
+    "analysisFunctionKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Function host or function key used by the server-side web app."
+      }
+    },
     "persistenceProvider": {
       "type": "string",
       "defaultValue": "Sqlite",
@@ -214,6 +235,13 @@
         "description": "Provision private Blob Storage for oversized analysis payloads."
       }
     },
+    "analysisPayloadBlobContainerUri": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Existing Blob container URI used for oversized analysis payloads. Takes precedence over frontend-provisioned payload storage."
+      }
+    },
     "payloadOffloadThresholdBytes": {
       "type": "int",
       "defaultValue": 524288,
@@ -279,7 +307,7 @@
     "kvRefRegsApiKey": "[format('@Microsoft.KeyVault(VaultName={0};SecretName={1})', variables('keyVaultName'), 'RegulationsGov-ApiKey')]",
     "kvRefFoundryEndpoint": "[format('@Microsoft.KeyVault(VaultName={0};SecretName={1})', variables('keyVaultName'), 'Foundry-ProjectEndpoint')]",
     "sqliteConnectionString": "Data Source=/home/data/analysis.db",
-    "payloadContainerUri": "[if(parameters('enablePayloadStorage'), format('https://{0}.blob.{1}/{2}', variables('payloadStorageName'), environment().suffixes.storage, variables('payloadContainerName')), '')]",
+    "payloadContainerUri": "[if(not(empty(parameters('analysisPayloadBlobContainerUri'))), parameters('analysisPayloadBlobContainerUri'), if(parameters('enablePayloadStorage'), format('https://{0}.blob.{1}/{2}', variables('payloadStorageName'), environment().suffixes.storage, variables('payloadContainerName')), ''))]",
     "alertActions": "[if(empty(parameters('alertEmail')), createArray(), createArray(createObject('actionGroupId', resourceId('Microsoft.Insights/actionGroups', format('{0}-operations', parameters('baseName'))))))]"
   },
   "resources": [
@@ -705,6 +733,11 @@
         "Persistence__Payloads__ContainerName": "[variables('payloadContainerName')]",
         "Persistence__Payloads__OffloadThresholdBytes": "[string(parameters('payloadOffloadThresholdBytes'))]",
         "Persistence__Payloads__CreateIfNotExists": "false",
+        "AnalysisBackend__Enabled": "[string(parameters('useFunctionAnalysisBackend'))]",
+        "AnalysisBackend__BaseUrl": "[parameters('analysisFunctionBaseUrl')]",
+        "AnalysisBackend__FunctionKey": "[parameters('analysisFunctionKey')]",
+        "AnalysisBackend__PollIntervalSeconds": "2",
+        "AnalysisBackend__TimeoutMinutes": "90",
         "Attachments__AllowedHosts__0": "downloads.regulations.gov",
         "Attachments__MaxDownloadBytes": "26214400",
         "Attachments__MaxRedirects": "3",
@@ -899,6 +932,10 @@
     "effectiveCosmosEndpoint": {
       "type": "string",
       "value": "[if(parameters('provisionCosmosResources'), coalesce(tryGet(tryGet(if(parameters('provisionCosmosResources'), reference(resourceId('Microsoft.DocumentDB/databaseAccounts', variables('provisionedCosmosAccountName')), '2024-05-15', 'full'), null()), 'properties'), 'documentEndpoint'), parameters('cosmosEndpoint')), parameters('cosmosEndpoint'))]"
+    },
+    "effectiveCosmosAccountName": {
+      "type": "string",
+      "value": "[if(parameters('provisionCosmosResources'), variables('provisionedCosmosAccountName'), parameters('cosmosAccountName'))]"
     },
     "foundryRoleAssignmentCommand": {
       "type": "string",

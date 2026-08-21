@@ -75,6 +75,22 @@ builder.Services.AddOptions<AnalysisPayloadOptions>()
             && uri.Scheme == Uri.UriSchemeHttps),
         "Persistence:Payloads:BlobContainerUri must be an absolute HTTPS URL when configured.")
     .ValidateOnStart();
+builder.Services.AddOptions<FunctionAnalysisOptions>()
+    .Bind(builder.Configuration.GetSection(FunctionAnalysisOptions.SectionName))
+    .Validate(options => !options.Enabled
+        || (Uri.TryCreate(options.BaseUrl, UriKind.Absolute, out var uri)
+            && uri.Scheme == Uri.UriSchemeHttps),
+        "AnalysisBackend:BaseUrl must be an absolute HTTPS URL when the Function backend is enabled.")
+    .Validate(options => !options.Enabled || !string.IsNullOrWhiteSpace(options.FunctionKey),
+        "AnalysisBackend:FunctionKey is required when the Function backend is enabled.")
+    .Validate(options => !options.Enabled
+        || string.Equals(builder.Configuration["Persistence:Provider"], "Cosmos", StringComparison.OrdinalIgnoreCase),
+        "Persistence:Provider must be Cosmos when the Function backend is enabled.")
+    .Validate(options => options.PollIntervalSeconds is >= 1 and <= 30,
+        "AnalysisBackend:PollIntervalSeconds must be between 1 and 30.")
+    .Validate(options => options.TimeoutMinutes is >= 1 and <= 180,
+        "AnalysisBackend:TimeoutMinutes must be between 1 and 180.")
+    .ValidateOnStart();
 builder.Services.AddSingleton<IAnalysisPayloadStore, BlobAnalysisPayloadStore>();
 
 // API settings + typed client for the regulatory comments backend.
@@ -101,7 +117,17 @@ builder.Services.AddHttpClient("foundry", c =>
     c.Timeout = TimeSpan.FromMinutes(10);
 });
 builder.Services.AddScoped<FoundryAnalysisService>();
-builder.Services.AddScoped<IAnalysisRunner>(sp => sp.GetRequiredService<FoundryAnalysisService>());
+builder.Services.AddHttpClient<FunctionAnalysisRunner>((services, client) =>
+{
+    var options = services.GetRequiredService<Microsoft.Extensions.Options.IOptions<FunctionAnalysisOptions>>().Value;
+    if (!string.IsNullOrWhiteSpace(options.BaseUrl))
+        client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromMinutes(2);
+});
+builder.Services.AddScoped<IAnalysisRunner>(services =>
+    services.GetRequiredService<Microsoft.Extensions.Options.IOptions<FunctionAnalysisOptions>>().Value.Enabled
+        ? services.GetRequiredService<FunctionAnalysisRunner>()
+        : services.GetRequiredService<FoundryAnalysisService>());
 builder.Services.AddScoped<AnalysisStore>();
 
 // Per-circuit cache of the last Comments fetch (so opening a comment + going back doesn't re-fetch).

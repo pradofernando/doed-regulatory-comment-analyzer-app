@@ -1,19 +1,87 @@
 @page "/settings"
 @rendermode InteractiveServer
 @inject ApiSettingsStore SettingsStore
+@inject Microsoft.Extensions.Options.IOptions<FunctionAnalysisOptions> FunctionOptions
 
-<PageTitle>API Settings</PageTitle>
+<PageTitle>Settings</PageTitle>
 
 <header class="page-header">
     <span class="section-eyebrow">Configuration</span>
-    <h1 class="page-header__title">API Settings</h1>
+    <h1 class="page-header__title">Settings</h1>
     <p class="page-header__meta">
-        Defaults to the public Regulations.gov v4 API and the DoE Demo Foundry project. Override anything below;
-        changes persist to <code>App_Data/api-settings.json</code>.
+        @(FunctionOptions.Value.Enabled
+            ? "Choose defaults for comment retrieval and analysis runs. Agent infrastructure is managed by the deployed Function App."
+            : "Configure the comments API and direct Azure AI Foundry connection for this environment.")
     </p>
 </header>
 
 <EditForm Model="_form" OnValidSubmit="OnSaveAsync" FormName="apiSettings">
+@if (FunctionOptions.Value.Enabled)
+{
+    <section class="surface-card">
+        <h2 class="settings-section-title">Comments</h2>
+
+        <div class="row g-3">
+            <div class="col-md-8">
+                <label class="form-label">Regulations.gov API base URL</label>
+                <InputText class="form-control" @bind-Value="_form.BaseUrl" />
+                <div class="form-text">Default: <code>@ApiSettings.DefaultBaseUrl</code></div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">API key</label>
+                <InputText type="password" class="form-control" @bind-Value="_form.ApiKey" />
+                <div class="form-text">Sent only to the comments API.</div>
+            </div>
+            <div class="col-12">
+                <label class="form-label">Default document / docket ID</label>
+                <InputText class="form-control" @bind-Value="_form.DefaultDocumentId" />
+            </div>
+        </div>
+    </section>
+
+    <section class="surface-card mt-3">
+        <h2 class="settings-section-title">Analysis preferences</h2>
+
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label">Model deployment</label>
+                <InputText class="form-control" @bind-Value="_form.ModelDeploymentName" />
+                <div class="form-text">Must be an allowed deployment configured on the Function App.</div>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Batch size</label>
+                <InputNumber class="form-control" @bind-Value="_form.BatchSize" min="1" max="25" />
+                <div class="form-text">Comments grouped per AI request.</div>
+            </div>
+            <div class="col-md-3 d-flex align-items-center">
+                <div class="form-check mt-3">
+                    <InputCheckbox class="form-check-input" id="runValidation" @bind-Value="_form.RunValidation" />
+                    <label class="form-check-label" for="runValidation">Validate grouped analysis</label>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="surface-card mt-3">
+        <h2 class="settings-section-title">Managed configuration</h2>
+        <dl class="managed-settings mb-0">
+            <div>
+                <dt>Analysis service</dt>
+                <dd>Azure Function App</dd>
+            </div>
+            <div>
+                <dt>Core and follow-up agents</dt>
+                <dd>Managed by deployment</dd>
+            </div>
+            <div>
+                <dt>Foundry project endpoint</dt>
+                <dd>Managed by deployment</dd>
+            </div>
+        </dl>
+    </section>
+}
+else
+{
     <section class="surface-card">
         <h2 class="settings-section-title">Comments backend</h2>
 
@@ -121,6 +189,7 @@
             </div>
         </div>
     </section>
+}
 
     <div class="d-flex gap-2 mt-3">
         <button type="submit" class="btn btn-primary">Save</button>
@@ -145,6 +214,10 @@
         color: var(--color-text-muted);
         margin: 0 0 1rem;
     }
+    .managed-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
+    .managed-settings div { min-width: 0; }
+    .managed-settings dt { color: var(--color-text-muted); font-size: .75rem; font-weight: 600; text-transform: uppercase; }
+    .managed-settings dd { margin: .25rem 0 0; color: var(--color-text); }
 </style>
 
 @code {
@@ -166,7 +239,18 @@
 
     private Task OnResetAsync()
     {
-        SettingsStore.ResetToDefaults();
+        if (FunctionOptions.Value.Enabled)
+        {
+            var current = SettingsStore.Current;
+            current.DefaultDocumentId = new ApiSettings().DefaultDocumentId;
+            current.BatchSize = ApiSettings.DefaultBatchSize;
+            current.RunValidation = true;
+            SettingsStore.Update(current);
+        }
+        else
+        {
+            SettingsStore.ResetToDefaults();
+        }
         _form = SettingsStore.Current;
         _saved = true;
         return Task.CompletedTask;

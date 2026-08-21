@@ -55,6 +55,9 @@ param(
     [string]$FoundryProjectEndpoint = "",
 
     [Parameter(Mandatory=$false)]
+    [string]$AgentDeploymentOutputPath = "",
+
+    [Parameter(Mandatory=$false)]
     [switch]$UsePremium
 )
 
@@ -241,7 +244,7 @@ function Get-FoundryProjectEndpoint {
     return "https://$FoundryName.cognitiveservices.azure.com/api/projects/$ProjectName"
 }
 
-function Ensure-OptionalFoundryDeployment {
+function Add-PreferredFoundryDeployment {
     param(
         [Parameter(Mandatory=$true)]
         [string]$ResourceGroupName,
@@ -272,11 +275,11 @@ function Ensure-OptionalFoundryDeployment {
         -o tsv 2>$null
 
     if (-not [string]::IsNullOrWhiteSpace($existingDeploymentName)) {
-        Write-Host "Optional Foundry deployment $DeploymentName already exists." -ForegroundColor Green
+        Write-Host "Preferred Foundry deployment $DeploymentName already exists." -ForegroundColor Green
         return $true
     }
 
-    Write-Host "Attempting optional Foundry deployment $DeploymentName ($ModelName $ModelVersion)..." -ForegroundColor Yellow
+    Write-Host "Attempting preferred Foundry deployment $DeploymentName ($ModelName $ModelVersion)..." -ForegroundColor Yellow
     $createOutput = az cognitiveservices account deployment create `
         --name $AccountName `
         --resource-group $ResourceGroupName `
@@ -289,12 +292,12 @@ function Ensure-OptionalFoundryDeployment {
         --output json 2>&1 | Out-String
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "WARNING: Optional Foundry deployment $DeploymentName failed. Continuing without it." -ForegroundColor Yellow
+        Write-Host "WARNING: Preferred Foundry deployment $DeploymentName failed. Continuing with the fallback model." -ForegroundColor Yellow
         Write-Host $createOutput -ForegroundColor DarkGray
         return $false
     }
 
-    Write-Host "Optional Foundry deployment $DeploymentName created." -ForegroundColor Green
+    Write-Host "Preferred Foundry deployment $DeploymentName created." -ForegroundColor Green
     return $true
 }
 
@@ -310,7 +313,10 @@ function Invoke-AgentCreationWorkflow {
         [string]$ResourceGroupName,
 
         [Parameter(Mandatory=$true)]
-        [string]$ModelDeployment
+        [string]$ModelDeployment,
+
+        [Parameter(Mandatory=$false)]
+        [string]$DeploymentOutputPath = ""
     )
 
     $agentPromptsPath = Resolve-Path (Join-Path $PSScriptRoot "..\AGENT_PROMPTS.md")
@@ -335,6 +341,13 @@ function Invoke-AgentCreationWorkflow {
             AgentName = 'RegulatoryCommentValidationAgent'
             Description = 'Validates grouped regulatory comment analysis and applies minimal corrective cleanup'
             EnvPrefix = 'VALIDATION'
+        },
+        [ordered]@{
+            SectionName = 'FOLLOWUP_AGENT'
+            DisplayName = 'Follow-up Q&A Agent'
+            AgentName = 'RegulatoryCommentFollowUpAgent'
+            Description = 'Answers grounded follow-up questions about a completed regulatory comment analysis'
+            EnvPrefix = 'FOLLOWUP'
         }
     )
 
@@ -393,7 +406,13 @@ function Invoke-AgentCreationWorkflow {
 
         for ($attempt = 1; $attempt -le $attemptCount; $attempt++) {
             Write-Host "Creating agent versions with Azure AI Projects SDK and Entra auth (attempt $attempt of $attemptCount)..." -ForegroundColor Yellow
-            $agentCreationRaw = & $pythonExe $helperScript --project-endpoint $AiEndpoint --definitions-file $definitionsFile 2>&1 | Out-String
+            $agentCreationRaw = & $pythonExe $helperScript `
+                --project-endpoint $AiEndpoint `
+                --definitions-file $definitionsFile `
+                --required-env-prefix CATEGORIZATION `
+                --required-env-prefix GROUPING `
+                --required-env-prefix VALIDATION `
+                --required-env-prefix FOLLOWUP 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "ERROR: Agent creation helper failed." -ForegroundColor Red
                 Write-Host $agentCreationRaw
@@ -437,12 +456,19 @@ function Invoke-AgentCreationWorkflow {
             }
         }
 
-        if ($createdAgents.ContainsKey('CATEGORIZATION') -and $createdAgents.ContainsKey('GROUPING')) {
+        if ($createdAgents.ContainsKey('CATEGORIZATION') `
+            -and $createdAgents.ContainsKey('GROUPING') `
+            -and $createdAgents.ContainsKey('FOLLOWUP')) {
             Write-Host ""
             Write-Host "Updating Function App settings with agent endpoint, names, and versions..." -ForegroundColor Yellow
 
+            $allowedModelDeployments = (@('gpt-4o', $ModelDeployment) |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique) -join ','
+
             $functionAppSettings = @(
                 "FOUNDRY_PROJECT_ENDPOINT=$AiEndpoint",
+                "ALLOWED_MODEL_DEPLOYMENTS=$allowedModelDeployments",
                 "CATEGORIZATION_AGENT_NAME=$($createdAgents['CATEGORIZATION'].Name)",
                 "CATEGORIZATION_AGENT_VERSION=$($createdAgents['CATEGORIZATION'].Version)",
                 "CATEGORIZATION_AGENT_MODEL=$($createdAgents['CATEGORIZATION'].Model)",
@@ -474,8 +500,18 @@ function Invoke-AgentCreationWorkflow {
             az functionapp config appsettings delete `
                 --name $FunctionAppName `
                 --resource-group $ResourceGroupName `
-                --setting-names AZURE_AI_AGENT_ENDPOINT AZURE_AI_PROJECT_ENDPOINT AZURE_AI_SEARCH_SERVICE_NAME AZURE_AI_SEARCH_ENDPOINT AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT CATEGORIZATION_AGENT_ID GROUPING_AGENT_ID VALIDATION_AGENT_ID DOCUMENTINTELLIGENCE_API_KEY AZURE_DOCUMENT_INTELLIGENCE_API_KEY `
+                --setting-names AZURE_AI_AGENT_ENDPOINT AZURE_AI_PROJECT_ENDPOINT AZURE_AI_SEARCH_SERVICE_NAME AZURE_AI_SEARCH_ENDPOINT AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT CATEGORIZATION_AGENT_ID GROUPING_AGENT_ID VALIDATION_AGENT_ID FOLLOWUP_AGENT_ID FOLLOWUP_AGENT_NAME FOLLOWUP_AGENT_VERSION FOLLOWUP_AGENT_MODEL DOCUMENTINTELLIGENCE_API_KEY AZURE_DOCUMENT_INTELLIGENCE_API_KEY `
                 --output none 2>$null
+
+            if (-not [string]::IsNullOrWhiteSpace($DeploymentOutputPath)) {
+                [ordered]@{
+                    followUpAgent = [ordered]@{
+                        name = $createdAgents['FOLLOWUP'].Name
+                        version = $createdAgents['FOLLOWUP'].Version
+                        model = $createdAgents['FOLLOWUP'].Model
+                    }
+                } | ConvertTo-Json -Depth 4 | Set-Content -Path $DeploymentOutputPath -Encoding UTF8
+            }
 
             Write-Host "Function App settings updated." -ForegroundColor Green
             Write-Host ""
@@ -491,10 +527,12 @@ function Invoke-AgentCreationWorkflow {
             } else {
                 Write-Host "  Validation Agent:          not created; app setting left blank" -ForegroundColor Yellow
             }
+
+            Write-Host "  Follow-up Q&A Agent Name:  $($createdAgents['FOLLOWUP'].Name)" -ForegroundColor Cyan
+            Write-Host "  Follow-up Q&A Agent ID:    $($createdAgents['FOLLOWUP'].Id)" -ForegroundColor DarkGray
         } else {
             Write-Host ""
-            Write-Host "WARNING: One or both required agents failed to create." -ForegroundColor Yellow
-            Write-Host "Update the Function App agent name/version/model settings manually after creating the agents in Foundry." -ForegroundColor Yellow
+            throw "One or more required Foundry agents failed to create: categorization, grouping, or follow-up Q&A."
         }
     } finally {
         if (Test-Path $definitionsFile) {
@@ -1242,11 +1280,10 @@ Write-Host "Foundry Resource Endpoint:$foundryResourceEndpoint" -ForegroundColor
 Write-Host "Doc Intelligence Endpoint:$documentIntelligenceEndpoint" -ForegroundColor White
 Write-Host "AI Search Service:        $searchServiceName" -ForegroundColor White
 Write-Host "AI Search Endpoint:       $searchServiceEndpoint" -ForegroundColor White
-Write-Host "Default Agent Model:      $modelDeployment" -ForegroundColor White
 Write-Host "Embedding Model:          $embeddingModelDeployment" -ForegroundColor White
 Write-Host ""
 
-$optionalGpt54DeploymentAvailable = Ensure-OptionalFoundryDeployment `
+$preferredModelDeploymentAvailable = Add-PreferredFoundryDeployment `
     -ResourceGroupName $ResourceGroupName `
     -AccountName $aiFoundryName `
     -DeploymentName 'gpt-5.4' `
@@ -1255,12 +1292,33 @@ $optionalGpt54DeploymentAvailable = Ensure-OptionalFoundryDeployment `
     -SkuName 'GlobalStandard' `
     -Capacity $GptCapacity
 
-if ($optionalGpt54DeploymentAvailable) {
-    Write-Host "Optional GPT-5.4 Model:   gpt-5.4" -ForegroundColor White
+if ($preferredModelDeploymentAvailable) {
+    $modelDeployment = 'gpt-5.4'
+    Write-Host "Preferred GPT-5.4 Model:  available" -ForegroundColor White
 } else {
-    Write-Host "Optional GPT-5.4 Model:   unavailable in this environment" -ForegroundColor Yellow
+    Write-Host "Preferred GPT-5.4 Model:  unavailable; using gpt-4o fallback" -ForegroundColor Yellow
 }
+Write-Host "Default Agent Model:      $modelDeployment" -ForegroundColor White
 Write-Host ""
+
+$allowedModelDeployments = (@('gpt-4o', $modelDeployment) |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    Select-Object -Unique) -join ','
+
+az functionapp config appsettings set `
+    --name $functionAppName `
+    --resource-group $ResourceGroupName `
+    --settings `
+        "ALLOWED_MODEL_DEPLOYMENTS=$allowedModelDeployments" `
+        "CATEGORIZATION_AGENT_MODEL=$modelDeployment" `
+        "GROUPING_AGENT_MODEL=$modelDeployment" `
+        "VALIDATION_AGENT_MODEL=$modelDeployment" `
+    --output none
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Failed to configure Function App model settings." -ForegroundColor Red
+    exit 1
+}
 
 $aiEndpoint = if ([string]::IsNullOrWhiteSpace($FoundryProjectEndpoint)) { $aiProjectEndpoint.TrimEnd('/') } else { $FoundryProjectEndpoint.TrimEnd('/') }
 
@@ -1427,7 +1485,8 @@ Invoke-AgentCreationWorkflow `
     -AiEndpoint $aiEndpoint `
     -FunctionAppName $functionAppName `
     -ResourceGroupName $ResourceGroupName `
-    -ModelDeployment $modelDeployment
+    -ModelDeployment $modelDeployment `
+    -DeploymentOutputPath $AgentDeploymentOutputPath
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan

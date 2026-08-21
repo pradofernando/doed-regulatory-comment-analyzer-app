@@ -10,6 +10,7 @@
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @inject ILogger<Analysis> Logger
+@inject Microsoft.Extensions.Options.IOptions<FunctionAnalysisOptions> FunctionOptions
 @implements IDisposable
 
 <PageTitle>AI Analysis</PageTitle>
@@ -70,7 +71,7 @@ else
             }
             else
             {
-                <button class="btn btn-primary" @onclick="StartRun" disabled="@(!Store.HasInput || !SettingsStore.Current.IsFoundryConfigured)">
+                <button class="btn btn-primary" @onclick="StartRun" disabled="@(!Store.HasInput || (!FunctionOptions.Value.Enabled && !SettingsStore.Current.IsFoundryConfigured))">
                     @(Store.LastRun is null ? "Run analysis" : "Re-run analysis")
                 </button>
             }
@@ -317,7 +318,14 @@ else
     @if (string.IsNullOrWhiteSpace(SettingsStore.Current.FollowUpAgentName))
     {
         <section class="surface-card text-muted small">
-            Add a <strong>Follow-up Q&amp;A agent name</strong> on the <a href="settings">Settings</a> page to enable chat about this analysis.
+            @if (FunctionOptions.Value.Enabled)
+            {
+                <span>Follow-up Q&amp;A is not enabled for this deployment.</span>
+            }
+            else
+            {
+                <span>Add a <strong>Follow-up Q&amp;A agent name</strong> on the <a href="settings">Settings</a> page to enable chat about this analysis.</span>
+            }
         </section>
     }
     else
@@ -507,10 +515,10 @@ else
     {
         _progress = Store.LastProgress;
 
-        // Re-attach to an in-flight (or just-finished) job for this document so navigating
-        // away and back — or a quick reconnect within the same circuit — keeps showing progress.
-        var job = Jobs.GetLatestForDocument(Store.DocumentId);
-        if (job is not null && (job.IsActive || (Store.LastRun is null && job.Run is not null)))
+        // Re-attach only to the job this circuit explicitly started. Looking up merely by
+        // document ID can resurrect an older completed run after fresh comments are staged.
+        var job = Store.CurrentJobId is { } jobId ? Jobs.Get(jobId) : null;
+        if (job is not null)
         {
             AttachToJob(job);
         }
@@ -539,6 +547,7 @@ else
     private void AttachToJob(AnalysisJob job)
     {
         _currentJob = job;
+        Store.CurrentJobId = job.Id;
         _isRunning = job.IsActive;
         _progress = job.Progress;
         Store.IsRunning = job.IsActive;

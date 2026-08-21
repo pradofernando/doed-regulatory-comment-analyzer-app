@@ -11,7 +11,14 @@ This Azure Function automates the complete workflow:
 3. **Consolidate Data** - Combines inline text and attachment text into CSV format
 4. **AI Categorization** - Uses Azure AI Agent to categorize each comment
 5. **Group Analysis** - Analyzes and groups similar comments with AI Agent
-6. **Store Results** - Saves all outputs to Azure Blob Storage
+6. **Store Results** - Saves frontend-compatible run records to Cosmos DB and large/raw artifacts to Blob Storage
+
+Scheduled and manual requests use the same `analysis-requests` queue worker. The Function exposes Function-key-protected endpoints:
+
+- `POST /api/analysis-runs` validates settings, creates a queued run, and returns `202 Accepted` with a `runId`.
+- `GET /api/analysis-runs/{runId}` returns `queued`, `running`, `succeeded`, or `failed` status.
+
+The queue worker atomically claims a run before execution, preventing duplicate queue deliveries from running concurrently. Categorization payloads above 512 KB are gzip-compressed into the private `analysis-run-payloads` container using the same format consumed by the frontend.
 
 ## Quick Start
 
@@ -40,6 +47,8 @@ The script handles everything:
 - Creates the Categorization, Grouping, and Validation agents in Foundry when the deployed endpoint is available
 - Updates the Function App with the Foundry project endpoint plus agent name/version/model settings
 - Publishes the Function App code
+
+For the integrated frontend/Cosmos topology, use the root deployment script. It provisions or selects Cosmos, assigns both managed identities, creates payload storage, configures the Function endpoint/key on the server-side frontend, and enables Function-owned analysis. The Function-only script intentionally leaves manual analysis disabled unless Cosmos settings are supplied separately.
 
 By default, the script deploys the Function App on Flex Consumption. If you pass `-UsePremium`, it opts into Elastic Premium and still falls back to Flex Consumption automatically if Premium validation fails.
 
@@ -131,13 +140,14 @@ Configure these settings in Azure Portal → Function App → Configuration or i
 | `FOUNDRY_PROJECT_ENDPOINT` | Azure AI Foundry project endpoint | `https://your-resource.cognitiveservices.azure.com/api/projects/your-project` |
 | `CATEGORIZATION_AGENT_NAME` | Foundry agent name for categorization | `RegulatoryCommentCategorizationAgent` |
 | `CATEGORIZATION_AGENT_VERSION` | Version of the categorization agent | `1` |
-| `CATEGORIZATION_AGENT_MODEL` | Model deployment for the categorization agent | `gpt-4o` |
+| `CATEGORIZATION_AGENT_MODEL` | Model deployment for the categorization agent | `gpt-5.4` |
 | `GROUPING_AGENT_NAME` | Foundry agent name for grouping | `RegulatoryCommentGroupingAgent` |
 | `GROUPING_AGENT_VERSION` | Version of the grouping agent | `1` |
-| `GROUPING_AGENT_MODEL` | Model deployment for the grouping agent | `gpt-4o` |
+| `GROUPING_AGENT_MODEL` | Model deployment for the grouping agent | `gpt-5.4` |
 | `VALIDATION_AGENT_NAME` | Optional Foundry agent name for validation | `doed-comment-agent3` |
 | `VALIDATION_AGENT_VERSION` | Version of the validation agent | `1` |
-| `VALIDATION_AGENT_MODEL` | Model deployment for the validation agent | `gpt-4o` |
+| `VALIDATION_AGENT_MODEL` | Model deployment for the validation agent | `gpt-5.4` |
+| `ALLOWED_MODEL_DEPLOYMENTS` | Comma-separated models accepted from manual analysis requests | `gpt-5.4,gpt-4o` |
 | `BATCH_SIZE` | Number of comments per batch for grouping | `5` |
 | `MAX_COMMENTS` | Limit number of comments to process (empty = all) | `10` or empty |
 | `AZURE_STORAGE_ACCOUNT_NAME` | Storage account name for blob storage (uses managed identity) | `storeregulatory` |
@@ -156,19 +166,22 @@ Configure these settings in Azure Portal → Function App → Configuration or i
     "FOUNDRY_PROJECT_ENDPOINT": "https://your-resource.cognitiveservices.azure.com/api/projects/your-project",
     "CATEGORIZATION_AGENT_NAME": "your-categorization-agent-name",
     "CATEGORIZATION_AGENT_VERSION": "1",
-    "CATEGORIZATION_AGENT_MODEL": "gpt-4o",
+    "CATEGORIZATION_AGENT_MODEL": "gpt-5.4",
     "GROUPING_AGENT_NAME": "your-grouping-agent-name",
     "GROUPING_AGENT_VERSION": "1",
-    "GROUPING_AGENT_MODEL": "gpt-4o",
+    "GROUPING_AGENT_MODEL": "gpt-5.4",
     "VALIDATION_AGENT_NAME": "your-validation-agent-name",
     "VALIDATION_AGENT_VERSION": "1",
-    "VALIDATION_AGENT_MODEL": "gpt-4o",
+    "VALIDATION_AGENT_MODEL": "gpt-5.4",
+    "ALLOWED_MODEL_DEPLOYMENTS": "gpt-5.4,gpt-4o",
     "BATCH_SIZE": "5",
     "MAX_COMMENTS": "",
     "AZURE_STORAGE_ACCOUNT_NAME": "your_storage_account_name"
   }
 }
 ```
+
+The deployment script attempts to create or reuse `gpt-5.4` first. If that deployment is unavailable in the selected region or subscription, it configures the agents and Function App to use the Bicep-managed `gpt-4o` deployment instead.
 
 **Note:** Copy `local.settings.json.example` to `local.settings.json` and update with your actual values.
 

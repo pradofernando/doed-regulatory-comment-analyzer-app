@@ -3,7 +3,7 @@
 // ============================================================================
 // Provisions the Azure infrastructure required to host the Blazor web frontend
 // that uses the Azure AI Foundry agents created by the existing function-app
-// IaC (under ../../azure_func/infra/).
+// IaC (under ../../azure_func_v2/infra/).
 //
 // What this deploys (resource group scope):
 //   - Log Analytics workspace
@@ -80,6 +80,16 @@ param defaultDocumentId string = 'ED-2025-SCC-0481-0001'
 @maxValue(20)
 param batchSize int = 5
 
+@description('Delegate analysis execution to the Azure Function instead of running Foundry agents in the web app.')
+param useFunctionAnalysisBackend bool = false
+
+@description('Base HTTPS URL of the analysis Function App, for example https://func-example.azurewebsites.net/.')
+param analysisFunctionBaseUrl string = ''
+
+@secure()
+@description('Function host or function key used by the server-side web app.')
+param analysisFunctionKey string = ''
+
 @description('Analysis history backend. Sqlite is local/persistent App Service storage; AzureSql and Cosmos point to existing Azure resources.')
 @allowed([ 'Sqlite', 'AzureSql', 'Cosmos' ])
 param persistenceProvider string = 'Sqlite'
@@ -111,6 +121,9 @@ param cosmosSummaryContainerName string = 'analysis-run-summaries'
 
 @description('Provision private Blob Storage for oversized analysis payloads.')
 param enablePayloadStorage bool = false
+
+@description('Existing Blob container URI used for oversized analysis payloads. Takes precedence over frontend-provisioned payload storage.')
+param analysisPayloadBlobContainerUri string = ''
 
 @description('Offload raw categorization payloads to Blob Storage after this many UTF-8 bytes.')
 @minValue(65536)
@@ -511,9 +524,11 @@ var sqliteConnectionString = 'Data Source=/home/data/analysis.db'
 var effectiveCosmosEndpoint = provisionCosmosResources
   ? (cosmosAccount.?properties.?documentEndpoint ?? cosmosEndpoint)
   : cosmosEndpoint
-var payloadContainerUri = enablePayloadStorage
-  ? 'https://${payloadStorage.name}.blob.${environment().suffixes.storage}/${payloadContainerName}'
-  : ''
+var payloadContainerUri = !empty(analysisPayloadBlobContainerUri)
+  ? analysisPayloadBlobContainerUri
+  : (enablePayloadStorage
+      ? 'https://${payloadStorage.name}.blob.${environment().suffixes.storage}/${payloadContainerName}'
+      : '')
 var documentIntelligenceEndpoint = enableAttachmentOcr
   ? (documentIntelligence.?properties.?endpoint ?? '')
   : ''
@@ -535,6 +550,11 @@ resource webAppSettings 'Microsoft.Web/sites/config@2024-04-01' = {
     Persistence__Payloads__ContainerName: payloadContainerName
     Persistence__Payloads__OffloadThresholdBytes: string(payloadOffloadThresholdBytes)
     Persistence__Payloads__CreateIfNotExists: 'false'
+    AnalysisBackend__Enabled: string(useFunctionAnalysisBackend)
+    AnalysisBackend__BaseUrl: analysisFunctionBaseUrl
+    AnalysisBackend__FunctionKey: analysisFunctionKey
+    AnalysisBackend__PollIntervalSeconds: '2'
+    AnalysisBackend__TimeoutMinutes: '90'
     Attachments__AllowedHosts__0: 'downloads.regulations.gov'
     Attachments__MaxDownloadBytes: '26214400'
     Attachments__MaxRedirects: '3'
@@ -679,6 +699,7 @@ output readinessUrl string = 'https://${webApp.properties.defaultHostName}/healt
 output documentIntelligenceEndpoint string = documentIntelligenceEndpoint
 output payloadContainerUri string = payloadContainerUri
 output effectiveCosmosEndpoint string = effectiveCosmosEndpoint
+output effectiveCosmosAccountName string = provisionCosmosResources ? cosmosAccount.name : cosmosAccountName
 
 @description('Run these commands once after the first deployment to grant the web app permission to call the Azure AI Foundry prompt agents. Replace <FOUNDRY-PROJECT-RESOURCE-ID> with the full ARM ID of the existing Foundry project, e.g. /subscriptions/.../resourceGroups/rg-doed-comments/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>. Older tenants expose these two roles as the single legacy role "Azure AI User".')
 output foundryRoleAssignmentCommand string = 'az role assignment create --assignee-object-id ${webApp.identity.principalId} --assignee-principal-type ServicePrincipal --role "Foundry Project Runtime User" --scope <FOUNDRY-PROJECT-RESOURCE-ID>; az role assignment create --assignee-object-id ${webApp.identity.principalId} --assignee-principal-type ServicePrincipal --role "Foundry Agent Consumer" --scope <FOUNDRY-PROJECT-RESOURCE-ID>'

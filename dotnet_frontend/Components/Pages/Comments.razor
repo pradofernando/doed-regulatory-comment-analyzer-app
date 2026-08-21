@@ -6,6 +6,7 @@
 @inject IJSRuntime JS
 @inject AnalysisStore Analysis
 @inject CommentsBrowseState Browse
+@inject Microsoft.Extensions.Options.IOptions<FunctionAnalysisOptions> FunctionOptions
 
 <PageTitle>Comments</PageTitle>
 
@@ -90,8 +91,8 @@
                 Download JSON
             </button>
             <button type="button" class="btn btn-primary btn-sm" @onclick="RunAnalysis"
-                    disabled="@(_result.Comments.Count == 0 || !SettingsStore.Current.IsFoundryConfigured)"
-                    title="@(SettingsStore.Current.IsFoundryConfigured ? (Analysis.SelectedCount > 0 ? $"Analyze the {Analysis.SelectedCount} selected comment(s)" : "Analyze all fetched comments (no selection made)") : "Configure the Foundry endpoint + agent names on the Settings page first")">
+                    disabled="@(_result.Comments.Count == 0 || (!FunctionOptions.Value.Enabled && !SettingsStore.Current.IsFoundryConfigured))"
+                    title="@(FunctionOptions.Value.Enabled || SettingsStore.Current.IsFoundryConfigured ? (Analysis.SelectedCount > 0 ? $"Analyze the {Analysis.SelectedCount} selected comment(s)" : "Analyze all fetched comments (no selection made)") : "Configure the Foundry endpoint + agent names on the Settings page first")">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-3px;margin-right:6px"><path d="M5 3v18l15-9z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
                 @(Analysis.SelectedCount > 0 ? $"Analyze {Analysis.SelectedCount} selected" : "Analyze all fetched")
             </button>
@@ -418,6 +419,8 @@
         Analysis.LastRun = null;
         Analysis.IsRunning = false;
         Analysis.LastProgress = null;
+        Analysis.CurrentJobId = null;
+        Analysis.LoadedRunId = null;
         Navigation.NavigateTo("/analysis");
     }
 
