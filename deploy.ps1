@@ -97,7 +97,19 @@ param(
     [string]$FoundryProjectEndpoint = "",
 
     [Parameter(Mandatory=$false)]
+    [string]$ExistingFunctionStorageAccountName = "",
+
+    [Parameter(Mandatory=$false)]
     [switch]$UsePremium,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$IncludeTags,
+
+    [Parameter(Mandatory=$false)]
+    [string]$DeploymentTagName = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$DeploymentTagValue = "",
 
     [Parameter(Mandatory=$false)]
     [switch]$SkipFunctionDeployment,
@@ -138,6 +150,18 @@ if ($PersistenceProvider -eq 'Cosmos' -and -not [string]::IsNullOrWhiteSpace($Co
 }
 if ($PersistenceProvider -eq 'AzureSql' -and [string]::IsNullOrWhiteSpace($AnalysisDbConnectionString)) {
     throw "AnalysisDbConnectionString is required when PersistenceProvider is AzureSql."
+}
+
+if ($IncludeTags) {
+    if ([string]::IsNullOrWhiteSpace($DeploymentTagName)) {
+        $DeploymentTagName = Read-Host "Enter Azure resource tag name"
+    }
+    if ([string]::IsNullOrWhiteSpace($DeploymentTagValue)) {
+        $DeploymentTagValue = Read-Host "Enter Azure resource tag value"
+    }
+    if ([string]::IsNullOrWhiteSpace($DeploymentTagName) -or [string]::IsNullOrWhiteSpace($DeploymentTagValue)) {
+        throw "Deployment tag name and value are required when -IncludeTags is passed."
+    }
 }
 
 $repoRoot = $PSScriptRoot
@@ -209,6 +233,47 @@ function Get-OptionalSetting {
     return $value
 }
 
+function Resolve-ExistingCosmosAccount {
+    param(
+        [Parameter(Mandatory=$true)][string]$ResourceGroupName,
+        [Parameter(Mandatory=$false)][string]$AccountName,
+        [Parameter(Mandatory=$false)][string]$NamePrefix
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($AccountName)) {
+        $accountJson = az cosmosdb show `
+            --name $AccountName `
+            --resource-group $ResourceGroupName `
+            -o json `
+            --only-show-errors 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accountJson)) {
+            return $null
+        }
+
+        return $accountJson | ConvertFrom-Json
+    }
+
+    $accountsJson = az cosmosdb list `
+        --resource-group $ResourceGroupName `
+        -o json `
+        --only-show-errors 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accountsJson)) {
+        return $null
+    }
+
+    $accounts = @($accountsJson | ConvertFrom-Json)
+    $candidates = @($accounts | Where-Object {
+        ($_.tags -and $_.tags.workload -eq 'doed-regulatory-comments-web') `
+            -or (-not [string]::IsNullOrWhiteSpace($NamePrefix) -and $_.name -like "$NamePrefix*")
+    })
+
+    if ($candidates.Count -eq 1) {
+        return $candidates[0]
+    }
+
+    return $null
+}
+
 Assert-CommandAvailable -Name 'az'
 Assert-CommandAvailable -Name 'dotnet'
 Assert-CommandAvailable -Name 'tar'
@@ -262,8 +327,14 @@ if (-not $SkipFunctionDeployment) {
     if (-not [string]::IsNullOrWhiteSpace($FoundryProjectEndpoint)) {
         $functionArgs += @('-FoundryProjectEndpoint', $FoundryProjectEndpoint)
     }
+    if (-not [string]::IsNullOrWhiteSpace($ExistingFunctionStorageAccountName)) {
+        $functionArgs += @('-ExistingFunctionStorageAccountName', $ExistingFunctionStorageAccountName)
+    }
     if ($UsePremium) {
         $functionArgs += '-UsePremium'
+    }
+    if ($IncludeTags) {
+        $functionArgs += @('-IncludeTags', '-DeploymentTagName', $DeploymentTagName, '-DeploymentTagValue', $DeploymentTagValue)
     }
 
     $powerShellExe = Get-CurrentPowerShellPath
@@ -386,6 +457,7 @@ $foundryProjectResourceId = az resource list `
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($foundryProjectResourceId)) {
     throw "Could not locate the Foundry project ARM resource in '$ResourceGroupName'."
 }
+$foundryAccountResourceId = ($foundryProjectResourceId -replace '/projects/[^/]+$', '')
 
 Write-Host "Function App:              $functionAppName" -ForegroundColor White
 Write-Host "Foundry endpoint:          $foundryEndpoint" -ForegroundColor White
@@ -410,6 +482,27 @@ Write-Host "============================================" -ForegroundColor Yello
 $rgExists = az group exists --name $FrontendResourceGroupName
 if ($rgExists -eq 'false') {
     Invoke-NativeChecked -Command 'az' -Arguments @('group', 'create', '--name', $FrontendResourceGroupName, '--location', $Location, '--output', 'none') -FailureMessage "Failed to create frontend resource group."
+}
+
+if ($PersistenceProvider -eq 'Cosmos' -and $ProvisionCosmosResources) {
+    $cosmosNamePrefix = "$(($FrontendBaseName -replace '-', ''))cosmos"
+    $existingCosmos = Resolve-ExistingCosmosAccount `
+        -ResourceGroupName $CosmosResourceGroupName `
+        -AccountName $CosmosAccountName `
+        -NamePrefix $cosmosNamePrefix
+    if ($existingCosmos) {
+        $CosmosAccountName = [string]$existingCosmos.name
+        $CosmosEndpoint = [string]$existingCosmos.documentEndpoint
+        if ([string]::IsNullOrWhiteSpace($CosmosEndpoint) -and $existingCosmos.properties) {
+            $CosmosEndpoint = [string]$existingCosmos.properties.documentEndpoint
+        }
+        if ([string]::IsNullOrWhiteSpace($CosmosEndpoint)) {
+            throw "Existing Cosmos account '$CosmosAccountName' was found, but its document endpoint could not be resolved."
+        }
+
+        $ProvisionCosmosResources = $false
+        Write-Host "Reusing existing Cosmos account: $CosmosAccountName" -ForegroundColor Yellow
+    }
 }
 
 $frontendParametersFile = Join-Path ([System.IO.Path]::GetTempPath()) ("doed-web-parameters-{0}.json" -f ([guid]::NewGuid().ToString('N')))
@@ -441,6 +534,7 @@ try {
             cosmosContainerName = @{ value = $CosmosContainerName }
             cosmosSummaryContainerName = @{ value = $CosmosSummaryContainerName }
             cosmosAccountName = @{ value = $CosmosAccountName }
+            tags = @{ value = if ($IncludeTags) { @{ workload = 'doed-regulatory-comments-web'; managedBy = 'bicep'; $DeploymentTagName = $DeploymentTagValue } } else { @{ workload = 'doed-regulatory-comments-web'; managedBy = 'bicep' } } }
             cosmosCreateIfNotExists = @{ value = $CosmosCreateIfNotExists.IsPresent }
             provisionCosmosResources = @{ value = $ProvisionCosmosResources.IsPresent }
             enablePayloadStorage = @{ value = $EnablePayloadStorage.IsPresent }
@@ -595,13 +689,16 @@ if ($useFunctionAnalysisBackend) {
 Write-Host "Granting web app managed identity access to Foundry agents..." -ForegroundColor Yellow
 $foundryRoles = @(
     @{ Name = 'Foundry Project Runtime User'; Scope = $foundryProjectResourceId },
-    @{ Name = 'Foundry Agent Consumer'; Scope = $foundryProjectResourceId }
+    @{ Name = 'Foundry Agent Consumer'; Scope = $foundryProjectResourceId },
+    @{ Name = 'Cognitive Services OpenAI User'; RoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'; Scope = $foundryAccountResourceId },
+    @{ Name = 'Foundry User'; RoleId = '53ca6127-db72-4b80-b1b0-d745d6d5456d'; Scope = $foundryAccountResourceId }
 )
 
 foreach ($role in $foundryRoles) {
+    $roleIdentifier = if ([string]::IsNullOrWhiteSpace($role.RoleId)) { $role.Name } else { $role.RoleId }
     $existingFoundryRole = az role assignment list `
         --assignee $webAppPrincipalId `
-        --role $role.Name `
+        --role $roleIdentifier `
         --scope $role.Scope `
         --query '[0].id' `
         -o tsv `
@@ -612,7 +709,7 @@ foreach ($role in $foundryRoles) {
             'role', 'assignment', 'create',
             '--assignee-object-id', $webAppPrincipalId,
             '--assignee-principal-type', 'ServicePrincipal',
-            '--role', $role.Name,
+            '--role', $roleIdentifier,
             '--scope', $role.Scope,
             '--only-show-errors',
             '--output', 'none'

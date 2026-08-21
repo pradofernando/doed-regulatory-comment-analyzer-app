@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.Extensions.Options;
 
 namespace DoedRegulatoryComments.Web.Services;
@@ -14,11 +15,12 @@ public sealed class FunctionAnalysisOptions
     public int TimeoutMinutes { get; set; } = 90;
 }
 
-public sealed class FunctionAnalysisRunner : IAnalysisRunner
+public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatService
 {
     private readonly HttpClient _client;
     private readonly IAnalysisRepository _repository;
     private readonly FunctionAnalysisOptions _options;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public FunctionAnalysisRunner(
         HttpClient client,
@@ -127,6 +129,94 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner
             request.Headers.Add("x-functions-key", _options.FunctionKey);
     }
 
+    public async Task<string> StartFollowUpThreadAsync(
+        AnalysisRun run,
+        ApiSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(settings.FollowUpAgentName))
+            throw new InvalidOperationException("FollowUpAgentName is not configured.");
+        if (run is null) throw new ArgumentNullException(nameof(run));
+        if (!run.Succeeded) throw new InvalidOperationException("Cannot start follow-up chat on an unsuccessful run.");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/followup/start")
+        {
+            Content = JsonContent.Create(new
+            {
+                analysisContext = FoundryAnalysisService.BuildFollowUpPriming(run, includeAcknowledgement: false),
+                agentName = settings.FollowUpAgentName,
+                agentVersion = settings.FollowUpAgentVersion,
+                agentModel = settings.ModelDeploymentName,
+            }, options: JsonOptions),
+        };
+        AddFunctionKey(request);
+
+        using var response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"The Function App rejected the follow-up chat start ({(int)response.StatusCode}): {body}");
+
+        var started = JsonSerializer.Deserialize<FollowUpStartResponse>(body, JsonOptions)
+            ?? throw new InvalidOperationException("The Function App returned an empty follow-up start response.");
+        if (string.IsNullOrWhiteSpace(started.ConversationId))
+            throw new InvalidOperationException("The Function App did not return a follow-up conversation ID.");
+
+        run.FollowUpThreadId = started.ConversationId;
+        return started.ConversationId;
+    }
+
+    public async Task<string> AskFollowUpAsync(
+        AnalysisRun run,
+        string question,
+        ApiSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(settings.FollowUpAgentName))
+            throw new InvalidOperationException("FollowUpAgentName is not configured.");
+        if (string.IsNullOrWhiteSpace(run.FollowUpThreadId))
+            throw new InvalidOperationException("Follow-up conversation has not been started. Call StartFollowUpThreadAsync first.");
+        if (string.IsNullOrWhiteSpace(question)) throw new ArgumentException("Question cannot be empty.", nameof(question));
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/followup/ask")
+        {
+            Content = JsonContent.Create(new
+            {
+                conversationId = run.FollowUpThreadId,
+                analysisContext = FoundryAnalysisService.BuildFollowUpPriming(run, includeAcknowledgement: false),
+                question = question.Trim(),
+                history = run.FollowUpHistory.Select(turn => new
+                {
+                    role = turn.Role,
+                    text = turn.Text,
+                    at = turn.At,
+                }).ToArray(),
+                agentName = settings.FollowUpAgentName,
+                agentVersion = settings.FollowUpAgentVersion,
+                agentModel = settings.ModelDeploymentName,
+            }, options: JsonOptions),
+        };
+        AddFunctionKey(request);
+
+        using var response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"The Function App rejected the follow-up question ({(int)response.StatusCode}): {body}");
+
+        var answer = JsonSerializer.Deserialize<FollowUpAskResponse>(body, JsonOptions)
+            ?? throw new InvalidOperationException("The Function App returned an empty follow-up answer response.");
+        if (string.IsNullOrWhiteSpace(answer.Answer))
+            throw new InvalidOperationException("The Function App returned an empty follow-up answer.");
+
+        run.FollowUpThreadId = string.IsNullOrWhiteSpace(answer.ConversationId)
+            ? run.FollowUpThreadId
+            : answer.ConversationId;
+        run.FollowUpHistory.Add(new FollowUpTurn("user", question.Trim(), DateTimeOffset.UtcNow));
+        run.FollowUpHistory.Add(new FollowUpTurn("agent", answer.Answer, DateTimeOffset.UtcNow));
+        return answer.Answer;
+    }
+
     private sealed record RunSubmission(Guid RunId, string Status);
     private sealed record RunStatus(Guid RunId, string Status, string? ErrorMessage);
+    private sealed record FollowUpStartResponse(string ConversationId);
+    private sealed record FollowUpAskResponse(string ConversationId, string Answer);
 }

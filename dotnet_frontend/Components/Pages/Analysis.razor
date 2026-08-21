@@ -4,7 +4,7 @@
 @using System.Text.Json
 @inject AnalysisStore Store
 @inject ApiSettingsStore SettingsStore
-@inject FoundryAnalysisService Foundry
+@inject IFollowUpChatService FollowUpChat
 @inject IAnalysisRepository Repo
 @inject AnalysisJobManager Jobs
 @inject NavigationManager Navigation
@@ -126,6 +126,12 @@ else
 {
     var g = run.Grouped;
     var totalGrouped = g.ThemeGroups.Sum(t => t.Count);
+    var usesCurrentCategorizationSchema = run.Categorizations.Any(cat =>
+        HasField(cat, "primary_theme", "canonical_reason", "comment_summary"));
+    var usesLegacyCategorizationSchema = run.Categorizations.Any(cat =>
+        !HasField(cat, "primary_theme", "canonical_reason", "comment_summary")
+        && HasField(cat, "primary_topic", "topic", "category", "sentiment", "overall_sentiment", "commenter_type", "type"));
+    var usesMixedCategorizationSchemas = usesCurrentCategorizationSchema && usesLegacyCategorizationSchema;
 
     <div class="d-flex justify-content-between align-items-center mt-4 mb-2 flex-wrap gap-2">
         <h2 class="section-title">Collective analysis</h2>
@@ -382,25 +388,32 @@ else
                     <tr>
                         <th>#</th>
                         <th>Comment ID</th>
-                        <th>Topic</th>
-                        <th>Sentiment</th>
+                        <th>@(usesMixedCategorizationSchemas ? "Theme / topic" : usesCurrentCategorizationSchema ? "Primary theme" : "Topic")</th>
+                        <th>@(usesMixedCategorizationSchemas ? "Reason / sentiment" : usesCurrentCategorizationSchema ? "Canonical reason" : "Sentiment")</th>
                         <th>Stance</th>
-                        <th>Commenter type</th>
+                        <th>@(usesMixedCategorizationSchemas ? "Summary / commenter type" : usesCurrentCategorizationSchema ? "Summary" : "Commenter type")</th>
                     </tr>
                 </thead>
                 <tbody>
                     @foreach (var cat in run.Categorizations)
                     {
+                        var usesCurrentRowSchema = HasField(cat, "primary_theme", "canonical_reason", "comment_summary");
                         <tr>
                             <td>
                                 <a class="submission-number-link" href="@CommentHref(cat.CommentId)"
                                    title="Open submission @cat.SubmissionNumber">@cat.SubmissionNumber</a>
                             </td>
                             <td><a href="@CommentHref(cat.CommentId)"><code>@cat.CommentId</code></a></td>
-                            <td>@GetField(cat, "primary_topic", "topic", "category")</td>
-                            <td>@GetField(cat, "sentiment", "overall_sentiment")</td>
+                            <td>@(usesCurrentRowSchema
+                                ? GetField(cat, "primary_theme", "primary_topic", "topic", "category")
+                                : GetField(cat, "primary_topic", "topic", "category"))</td>
+                            <td>@(usesCurrentRowSchema
+                                ? GetField(cat, "canonical_reason")
+                                : GetField(cat, "sentiment", "overall_sentiment"))</td>
                             <td>@GetField(cat, "stance", "position")</td>
-                            <td>@GetField(cat, "commenter_type", "type")</td>
+                            <td>@(usesCurrentRowSchema
+                                ? GetField(cat, "comment_summary")
+                                : GetField(cat, "commenter_type", "type"))</td>
                         </tr>
                     }
                 </tbody>
@@ -636,6 +649,9 @@ else
     private static string CommentHref(string commentId) =>
         $"comments/{Uri.EscapeDataString(commentId)}";
 
+    private static bool HasField(CategorizationResult cat, params string[] keys) =>
+        keys.Any(key => cat.Parsed.TryGetValue(key, out var value) && value is not null);
+
     private static string GetField(CategorizationResult cat, params string[] keys)
     {
         foreach (var k in keys)
@@ -697,7 +713,7 @@ else
         _chatError = null;
         try
         {
-            await Foundry.StartFollowUpThreadAsync(Store.LastRun, SettingsStore.Current, default);
+            await FollowUpChat.StartFollowUpThreadAsync(Store.LastRun, SettingsStore.Current, default);
             if (Store.LoadedRunId is Guid id && !string.IsNullOrEmpty(Store.LastRun.FollowUpThreadId))
             {
                 try { await Repo.SetFollowUpThreadAsync(id, Store.LastRun.FollowUpThreadId!); }
@@ -730,7 +746,7 @@ else
         var beforeCount = Store.LastRun.FollowUpHistory.Count;
         try
         {
-            await Foundry.AskFollowUpAsync(Store.LastRun, question, SettingsStore.Current, default);
+            await FollowUpChat.AskFollowUpAsync(Store.LastRun, question, SettingsStore.Current, default);
             if (Store.LoadedRunId is Guid id)
             {
                 // FoundryAnalysisService appends exactly two turns (user + agent); persist both.

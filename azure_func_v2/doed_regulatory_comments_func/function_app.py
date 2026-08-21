@@ -8,6 +8,7 @@ import time
 import csv
 import io
 import asyncio
+import uuid
 from typing import List, Dict, Any, Optional, Tuple
 import requests
 from agent_framework import AgentSession
@@ -1235,6 +1236,128 @@ def get_analysis_run_status(req: func.HttpRequest) -> func.HttpResponse:
         "errorMessage": document.get("errorMessage"),
     }
     return func.HttpResponse(json.dumps(response), mimetype="application/json")
+
+
+def _get_followup_agent_settings(payload: Dict[str, Any]) -> Tuple[str, Optional[str], Optional[str]]:
+    agent_name = (
+        str(payload.get("agentName") or "").strip()
+        or os.environ.get("FOLLOWUP_AGENT_NAME")
+        or os.environ.get("FOLLOWUP_AGENT_ID")
+        or "RegulatoryCommentFollowUpAgent"
+    )
+    agent_version = (
+        str(payload.get("agentVersion") or "").strip()
+        or os.environ.get("FOLLOWUP_AGENT_VERSION")
+        or None
+    )
+    agent_model = (
+        str(payload.get("agentModel") or "").strip()
+        or os.environ.get("FOLLOWUP_AGENT_MODEL")
+        or os.environ.get("CATEGORIZATION_AGENT_MODEL")
+        or None
+    )
+    if not agent_name:
+        raise ValueError("FOLLOWUP_AGENT_NAME is not configured.")
+    return agent_name, agent_version, agent_model
+
+
+def _followup_payload(req: func.HttpRequest) -> Dict[str, Any]:
+    payload = req.get_json() if req.get_body() else {}
+    if not isinstance(payload, dict):
+        raise ValueError("The request body must be a JSON object.")
+    return payload
+
+
+def _format_followup_prompt(payload: Dict[str, Any]) -> str:
+    analysis_context = str(payload.get("analysisContext") or "").strip()
+    question = str(payload.get("question") or "").strip()
+    if not analysis_context:
+        raise ValueError("analysisContext is required.")
+    if not question:
+        raise ValueError("question is required.")
+
+    history = payload.get("history") or []
+    prompt_lines = [
+        "You are a follow-up Q&A assistant for a public-comments analysis.",
+        "Use only the analysis context below and the prior chat turns provided here.",
+        "If the analysis does not contain enough information to answer, say so clearly.",
+        "",
+        "=== ANALYSIS CONTEXT ===",
+        analysis_context,
+        "",
+        "=== PRIOR CHAT TURNS ===",
+    ]
+
+    if isinstance(history, list) and history:
+        for turn in history[-20:]:
+            if not isinstance(turn, dict):
+                continue
+            role = str(turn.get("role") or "").strip() or "user"
+            text = str(turn.get("text") or "").strip()
+            if text:
+                prompt_lines.append(f"{role}: {text}")
+    else:
+        prompt_lines.append("(none)")
+
+    prompt_lines.extend([
+        "",
+        "=== CURRENT QUESTION ===",
+        question,
+        "",
+        "Answer in plain language and cite relevant theme groups or submission numbers when useful.",
+    ])
+    return "\n".join(prompt_lines)
+
+
+@app.route(route="followup/start", methods=["POST"], auth_level=func.AuthLevel.FUNCTION)
+def start_followup(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        payload = _followup_payload(req)
+        _get_followup_agent_settings(payload)
+        if not str(payload.get("analysisContext") or "").strip():
+            raise ValueError("analysisContext is required.")
+    except ValueError as error:
+        return func.HttpResponse(
+            json.dumps({"error": str(error)}),
+            status_code=400,
+            mimetype="application/json",
+        )
+
+    return func.HttpResponse(
+        json.dumps({"conversationId": f"function-followup-{uuid.uuid4()}"}),
+        mimetype="application/json",
+    )
+
+
+@app.route(route="followup/ask", methods=["POST"], auth_level=func.AuthLevel.FUNCTION)
+async def ask_followup(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        payload = _followup_payload(req)
+        agent_name, agent_version, agent_model = _get_followup_agent_settings(payload)
+        prompt = _format_followup_prompt(payload)
+        async with create_foundry_agent(agent_name, agent_version, agent_model) as agent:
+            answer = await run_foundry_agent(agent, AgentSession(), prompt)
+    except ValueError as error:
+        return func.HttpResponse(
+            json.dumps({"error": str(error)}),
+            status_code=400,
+            mimetype="application/json",
+        )
+    except Exception as error:
+        logging.exception("Follow-up Q&A agent call failed.")
+        return func.HttpResponse(
+            json.dumps({"error": str(error)}),
+            status_code=502,
+            mimetype="application/json",
+        )
+
+    return func.HttpResponse(
+        json.dumps({
+            "conversationId": str(payload.get("conversationId") or f"function-followup-{uuid.uuid4()}"),
+            "answer": answer,
+        }),
+        mimetype="application/json",
+    )
 
 
 @app.schedule(

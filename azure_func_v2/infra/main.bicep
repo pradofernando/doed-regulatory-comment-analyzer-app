@@ -116,6 +116,15 @@ param cosmosRunsContainerName string = 'analysis-runs'
 @description('Cosmos DB summary container. Its partition key must be /documentIdNormalized.')
 param cosmosSummariesContainerName string = 'analysis-run-summaries'
 
+@description('Optional tag name applied to taggable top-level resources. Leave empty to omit the extra tag.')
+param resourceTagName string = ''
+
+@description('Optional tag value applied to taggable top-level resources when resourceTagName is set.')
+param resourceTagValue string = ''
+
+@description('Existing Function storage account name in this resource group. Leave empty to create and manage a new storage account for the Function stack.')
+param existingFunctionStorageAccountName string = ''
+
 // ============================================================================
 // VARIABLES
 // Computed values used throughout the template
@@ -127,7 +136,9 @@ var uniqueSuffix = empty(deploymentSuffix) ? uniqueString(resourceGroup().id) : 
 // Resource names with unique suffixes where required for global uniqueness
 // Storage account names must be 3-24 chars, lowercase alphanumeric only
 #disable-next-line BCP334
-var storageAccountName = take(replace('st${baseName}${uniqueSuffix}', '-', ''), 24)
+var generatedStorageAccountName = take(replace('st${baseName}${uniqueSuffix}', '-', ''), 24)
+var useExistingFunctionStorageAccount = !empty(existingFunctionStorageAccountName)
+var storageAccountName = useExistingFunctionStorageAccount ? existingFunctionStorageAccountName : generatedStorageAccountName
 var keyVaultName = take('kv-${baseName}-${uniqueSuffix}', 24)
 var appInsightsName = 'appi-${baseName}'
 var logAnalyticsName = 'law-${baseName}'
@@ -142,6 +153,12 @@ var functionAppName = usePremiumHosting ? 'func-${baseName}-${hostingModeNamePar
 var hostingPlanName = usePremiumHosting ? 'asp-${baseName}-${hostingModeNamePart}' : 'asp-${baseName}'
 var hostingPlanSkuName = usePremiumHosting ? 'EP1' : 'FC1'
 var hostingPlanSkuTier = usePremiumHosting ? 'ElasticPremium' : 'FlexConsumption'
+var tags = union({
+  workload: 'doed-regulatory-comments-function'
+  managedBy: 'bicep'
+}, empty(resourceTagName) ? {} : {
+  '${resourceTagName}': resourceTagValue
+})
 var premiumRuntimeAppSettings = usePremiumHosting ? [
   {
     name: 'FUNCTIONS_WORKER_RUNTIME'
@@ -178,10 +195,15 @@ resource sharedCosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' 
 // - Azure Functions runtime storage
 // - Blob storage for comment outputs (raw JSON, CSV, analysis results)
 // ============================================================================
-resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
+resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
+  name: storageAccountName
+}
+
+resource storageAccountNew 'Microsoft.Storage/storageAccounts@2023-01-01' = if (!useExistingFunctionStorageAccount) {
   #disable-next-line BCP334 // Storage name is guaranteed to be valid with minLength constraint on baseName
   name: storageAccountName
   location: location
+  tags: tags
   
   // Standard_LRS is cost-effective for non-critical data
   // Use Standard_GRS for geo-redundancy if required
@@ -213,6 +235,9 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
 resource blobServices 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
   parent: storageAccount
   name: 'default'
+  dependsOn: [
+    storageAccountNew
+  ]
 }
 
 resource commentsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
@@ -241,6 +266,7 @@ resource releasesContainer 'Microsoft.Storage/storageAccounts/blobServices/conta
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
   location: location
+  tags: tags
   
   properties: {
     sku: {
@@ -280,6 +306,7 @@ resource regulationsApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   name: logAnalyticsName
   location: location
+  tags: tags
   
   properties: {
     sku: {
@@ -299,6 +326,7 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: appInsightsName
   location: location
+  tags: tags
   kind: 'web'
   
   properties: {
@@ -317,6 +345,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2023-10-01-preview' = {
   name: documentIntelligenceName
   location: location
+  tags: tags
 
   sku: {
     name: 'S0'
@@ -339,6 +368,7 @@ resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2023-10-01-p
 resource searchService 'Microsoft.Search/searchServices@2022-09-01' = {
   name: searchServiceName
   location: location
+  tags: tags
 
   identity: {
     type: 'SystemAssigned'
@@ -369,6 +399,7 @@ resource searchService 'Microsoft.Search/searchServices@2022-09-01' = {
 resource aiFoundry 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   name: aiFoundryName
   location: location
+  tags: tags
 
   sku: {
     name: 'S0'
@@ -449,9 +480,10 @@ resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployme
 // Premium uses EP1; Flex Consumption uses FC1 for subscriptions without
 // available App Service VM quota.
 // ============================================================================
-resource hostingPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
+resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: hostingPlanName
   location: location
+  tags: tags
   sku: {
     name: hostingPlanSkuName
     tier: hostingPlanSkuTier
@@ -473,6 +505,7 @@ resource hostingPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
 resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   name: functionAppName
   location: location
+  tags: tags
   kind: 'functionapp,linux'
 
   // Enable system-assigned managed identity for secure access to other resources
@@ -644,6 +677,18 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'VALIDATION_AGENT_MODEL'
+          value: preferredAgentModelDeploymentName
+        }
+        {
+          name: 'FOLLOWUP_AGENT_NAME'
+          value: 'RegulatoryCommentFollowUpAgent'
+        }
+        {
+          name: 'FOLLOWUP_AGENT_VERSION'
+          value: '1'
+        }
+        {
+          name: 'FOLLOWUP_AGENT_MODEL'
           value: preferredAgentModelDeploymentName
         }
         {

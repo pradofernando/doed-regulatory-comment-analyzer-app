@@ -26,7 +26,7 @@ The AI agents use RAG to learn **HOW DoED analyzes comments** (methodology, writ
 
 **Purpose**: Answer staff questions about a completed public-comment analysis using only the supplied analysis payload
 
-**Last Updated**: August 21, 2026 (v1.0)
+**Last Updated**: August 21, 2026 (v1.1 - align categorization schema)
 
 ### Prompt
 
@@ -40,7 +40,9 @@ It contains the document ID and total comment count; an overall summary and over
 sentiment; theme groups, each with a comment count, description, submission numbers,
 stance distribution, and common arguments; cross-cutting patterns; recommendations;
 and a per-comment index listing each submission by number and comment ID with its
-categorization JSON (primary_topic, sentiment, stance, key_concerns, commenter_type).
+categorization JSON. Current entries use primary_theme, canonical_reason, stance,
+comment_summary, rationale, and secondary_themes; older entries may use legacy topic
+or sentiment fields, so rely only on the fields actually present in each entry.
 Per-comment entries are truncated at 600 characters. Every later message is a user
 question about this same analysis. Retain the priming content for the whole conversation.
 

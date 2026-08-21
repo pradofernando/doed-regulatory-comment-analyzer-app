@@ -28,7 +28,7 @@ public interface IAnalysisRunner
 /// field. There are no asst_… IDs and no threads — multi-turn state is maintained server-side
 /// using <c>previous_response_id</c>.
 /// </summary>
-public sealed class FoundryAnalysisService : IAnalysisRunner
+public sealed class FoundryAnalysisService : IAnalysisRunner, IFollowUpChatService
 {
     private readonly ILogger<FoundryAnalysisService> _logger;
     private readonly AttachmentExtractor _attachments;
@@ -399,7 +399,7 @@ public sealed class FoundryAnalysisService : IAnalysisRunner
         return reply;
     }
 
-    private static string BuildFollowUpPriming(AnalysisRun run)
+    internal static string BuildFollowUpPriming(AnalysisRun run, bool includeAcknowledgement = true)
     {
         var sb = new StringBuilder();
         sb.AppendLine("You are a follow-up Q&A assistant for a public-comments analysis. I will paste the full analysis below, and then ask questions. Use ONLY the analysis below; if something is not covered, say so.");
@@ -436,8 +436,11 @@ public sealed class FoundryAnalysisService : IAnalysisRunner
             var snippet = cat.RawResponse.Length > 600 ? cat.RawResponse[..600] + "…" : cat.RawResponse;
             sb.AppendLine($"#{cat.SubmissionNumber} ({cat.CommentId}): {snippet.Replace("\n", " ").Trim()}");
         }
-        sb.AppendLine();
-        sb.AppendLine("Acknowledge that you have the analysis loaded, in one short sentence, then wait for my first question.");
+        if (includeAcknowledgement)
+        {
+            sb.AppendLine();
+            sb.AppendLine("Acknowledge that you have the analysis loaded, in one short sentence, then wait for my first question.");
+        }
         return sb.ToString();
     }
 

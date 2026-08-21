@@ -58,7 +58,19 @@ param(
     [string]$AgentDeploymentOutputPath = "",
 
     [Parameter(Mandatory=$false)]
-    [switch]$UsePremium
+    [switch]$UsePremium,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$IncludeTags,
+
+    [Parameter(Mandatory=$false)]
+    [string]$DeploymentTagName = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$DeploymentTagValue = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$ExistingFunctionStorageAccountName = ""
 )
 
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
@@ -66,6 +78,18 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
 }
 $ErrorActionPreference = 'Continue'
 $env:AZURE_CORE_ONLY_SHOW_ERRORS = 'true'
+
+if ($IncludeTags) {
+    if ([string]::IsNullOrWhiteSpace($DeploymentTagName)) {
+        $DeploymentTagName = Read-Host "Enter Azure resource tag name"
+    }
+    if ([string]::IsNullOrWhiteSpace($DeploymentTagValue)) {
+        $DeploymentTagValue = Read-Host "Enter Azure resource tag value"
+    }
+    if ([string]::IsNullOrWhiteSpace($DeploymentTagName) -or [string]::IsNullOrWhiteSpace($DeploymentTagValue)) {
+        throw "Deployment tag name and value are required when -IncludeTags is passed."
+    }
+}
 
 function Get-AgentPrompt {
     param(
@@ -474,7 +498,10 @@ function Invoke-AgentCreationWorkflow {
                 "CATEGORIZATION_AGENT_MODEL=$($createdAgents['CATEGORIZATION'].Model)",
                 "GROUPING_AGENT_NAME=$($createdAgents['GROUPING'].Name)",
                 "GROUPING_AGENT_VERSION=$($createdAgents['GROUPING'].Version)",
-                "GROUPING_AGENT_MODEL=$($createdAgents['GROUPING'].Model)"
+                "GROUPING_AGENT_MODEL=$($createdAgents['GROUPING'].Model)",
+                "FOLLOWUP_AGENT_NAME=$($createdAgents['FOLLOWUP'].Name)",
+                "FOLLOWUP_AGENT_VERSION=$($createdAgents['FOLLOWUP'].Version)",
+                "FOLLOWUP_AGENT_MODEL=$($createdAgents['FOLLOWUP'].Model)"
             )
 
             if ($createdAgents.ContainsKey('VALIDATION')) {
@@ -500,7 +527,7 @@ function Invoke-AgentCreationWorkflow {
             az functionapp config appsettings delete `
                 --name $FunctionAppName `
                 --resource-group $ResourceGroupName `
-                --setting-names AZURE_AI_AGENT_ENDPOINT AZURE_AI_PROJECT_ENDPOINT AZURE_AI_SEARCH_SERVICE_NAME AZURE_AI_SEARCH_ENDPOINT AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT CATEGORIZATION_AGENT_ID GROUPING_AGENT_ID VALIDATION_AGENT_ID FOLLOWUP_AGENT_ID FOLLOWUP_AGENT_NAME FOLLOWUP_AGENT_VERSION FOLLOWUP_AGENT_MODEL DOCUMENTINTELLIGENCE_API_KEY AZURE_DOCUMENT_INTELLIGENCE_API_KEY `
+                --setting-names AZURE_AI_AGENT_ENDPOINT AZURE_AI_PROJECT_ENDPOINT AZURE_AI_SEARCH_SERVICE_NAME AZURE_AI_SEARCH_ENDPOINT AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT CATEGORIZATION_AGENT_ID GROUPING_AGENT_ID VALIDATION_AGENT_ID FOLLOWUP_AGENT_ID DOCUMENTINTELLIGENCE_API_KEY AZURE_DOCUMENT_INTELLIGENCE_API_KEY `
                 --output none 2>$null
 
             if (-not [string]::IsNullOrWhiteSpace($DeploymentOutputPath)) {
@@ -774,6 +801,57 @@ function Publish-FlexFunctionApp {
     }
 }
 
+function Ensure-StoragePublicNetworkAccess {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$StorageAccountName,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ResourceGroupName,
+
+        [int]$MaxAttempts = 6
+    )
+
+    Write-Host "Ensuring storage account public network access is enabled before Function publish..." -ForegroundColor Yellow
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        az storage account update `
+            --name $StorageAccountName `
+            --resource-group $ResourceGroupName `
+            --public-network-access Enabled `
+            --default-action Allow `
+            --bypass AzureServices `
+            --only-show-errors `
+            --output none
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Storage network update command failed ($attempt/$MaxAttempts)." -ForegroundColor Yellow
+        }
+
+        $networkStateJson = az storage account show `
+            --name $StorageAccountName `
+            --resource-group $ResourceGroupName `
+            --query "{publicNetworkAccess:publicNetworkAccess, defaultAction:networkRuleSet.defaultAction, bypass:networkRuleSet.bypass}" `
+            -o json `
+            --only-show-errors
+
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($networkStateJson)) {
+            $networkState = $networkStateJson | ConvertFrom-Json
+            if ($networkState.publicNetworkAccess -eq 'Enabled' -and $networkState.defaultAction -eq 'Allow') {
+                Write-Host "Storage public network access is enabled." -ForegroundColor Green
+                return
+            }
+
+            Write-Host "Storage network state is publicNetworkAccess=$($networkState.publicNetworkAccess), defaultAction=$($networkState.defaultAction); retrying ($attempt/$MaxAttempts)..." -ForegroundColor Yellow
+        }
+
+        if ($attempt -lt $MaxAttempts) {
+            Start-Sleep -Seconds 10
+        }
+    }
+
+    throw "Storage account '$StorageAccountName' did not keep public network access enabled after $MaxAttempts attempts."
+}
+
 function Wait-ForFlexAppSettingsRemoval {
     param(
         [Parameter(Mandatory=$true)]
@@ -863,6 +941,14 @@ $documentIntelligenceNamePrefix = "docint-$BaseName-$DeploymentSuffix"
 $searchServiceNamePrefix = "srch-$BaseName-$DeploymentSuffix"
 $storageAccountNamePrefix = ("st{0}{1}" -f $BaseName, $DeploymentSuffix).Replace('-', '')
 
+if ([string]::IsNullOrWhiteSpace($ExistingFunctionStorageAccountName)) {
+    $detectedStorageAccountName = Get-DeploymentResourceName -ResourceGroupName $ResourceGroupName -ResourceType 'Microsoft.Storage/storageAccounts' -NamePrefix $storageAccountNamePrefix
+    if (-not [string]::IsNullOrWhiteSpace($detectedStorageAccountName)) {
+        $ExistingFunctionStorageAccountName = $detectedStorageAccountName
+        Write-Host "Reusing existing Function storage account: $ExistingFunctionStorageAccountName" -ForegroundColor Yellow
+    }
+}
+
 Write-Host "Deployment Suffix: $DeploymentSuffix ($suffixSource)" -ForegroundColor White
 Write-Host ""
 
@@ -942,7 +1028,16 @@ function Invoke-InfrastructureDeployment {
         [string]$DeploymentSuffix,
 
         [Parameter(Mandatory=$true)]
-        [string]$HostingMode
+        [string]$HostingMode,
+
+        [Parameter(Mandatory=$false)]
+        [string]$DeploymentTagName = "",
+
+        [Parameter(Mandatory=$false)]
+        [string]$DeploymentTagValue = "",
+
+        [Parameter(Mandatory=$false)]
+        [string]$ExistingFunctionStorageAccountName = ""
     )
 
     $output = az deployment group create `
@@ -960,6 +1055,9 @@ function Invoke-InfrastructureDeployment {
         --parameters deployerPrincipalId="$DeployerPrincipalId" `
         --parameters deployerPrincipalType="$DeployerPrincipalType" `
         --parameters hostingMode=$HostingMode `
+        --parameters resourceTagName="$DeploymentTagName" `
+        --parameters resourceTagValue="$DeploymentTagValue" `
+        --parameters existingFunctionStorageAccountName="$ExistingFunctionStorageAccountName" `
         --only-show-errors `
         --output json 2>&1
 
@@ -1008,7 +1106,16 @@ function Test-InfrastructureDeployment {
         [string]$DeploymentSuffix,
 
         [Parameter(Mandatory=$true)]
-        [string]$HostingMode
+        [string]$HostingMode,
+
+        [Parameter(Mandatory=$false)]
+        [string]$DeploymentTagName = "",
+
+        [Parameter(Mandatory=$false)]
+        [string]$DeploymentTagValue = "",
+
+        [Parameter(Mandatory=$false)]
+        [string]$ExistingFunctionStorageAccountName = ""
     )
 
     $output = az deployment group validate `
@@ -1025,6 +1132,9 @@ function Test-InfrastructureDeployment {
         --parameters deployerPrincipalId="$DeployerPrincipalId" `
         --parameters deployerPrincipalType="$DeployerPrincipalType" `
         --parameters hostingMode=$HostingMode `
+        --parameters resourceTagName="$DeploymentTagName" `
+        --parameters resourceTagValue="$DeploymentTagValue" `
+        --parameters existingFunctionStorageAccountName="$ExistingFunctionStorageAccountName" `
         --only-show-errors `
         --output json 2>&1
 
@@ -1049,7 +1159,10 @@ $validationAttempt = Test-InfrastructureDeployment `
     -DeployerPrincipalType $deployerPrincipalType `
     -BaseName $BaseName `
     -DeploymentSuffix $DeploymentSuffix `
-    -HostingMode $hostingMode
+    -HostingMode $hostingMode `
+    -DeploymentTagName $(if ($IncludeTags) { $DeploymentTagName } else { "" }) `
+    -DeploymentTagValue $(if ($IncludeTags) { $DeploymentTagValue } else { "" }) `
+    -ExistingFunctionStorageAccountName $ExistingFunctionStorageAccountName
 
 if ($validationAttempt.ExitCode -ne 0) {
     $premiumValidationOutput = $validationAttempt.Output
@@ -1071,7 +1184,10 @@ if ($validationAttempt.ExitCode -ne 0) {
             -DeployerPrincipalType $deployerPrincipalType `
             -BaseName $BaseName `
             -DeploymentSuffix $DeploymentSuffix `
-            -HostingMode $hostingMode
+            -HostingMode $hostingMode `
+            -DeploymentTagName $(if ($IncludeTags) { $DeploymentTagName } else { "" }) `
+            -DeploymentTagValue $(if ($IncludeTags) { $DeploymentTagValue } else { "" }) `
+            -ExistingFunctionStorageAccountName $ExistingFunctionStorageAccountName
     }
 
     Write-Host "" 
@@ -1108,7 +1224,10 @@ $deploymentAttempt = Invoke-InfrastructureDeployment `
     -DeployerPrincipalType $deployerPrincipalType `
     -BaseName $BaseName `
     -DeploymentSuffix $DeploymentSuffix `
-    -HostingMode $hostingMode
+    -HostingMode $hostingMode `
+    -DeploymentTagName $(if ($IncludeTags) { $DeploymentTagName } else { "" }) `
+    -DeploymentTagValue $(if ($IncludeTags) { $DeploymentTagValue } else { "" }) `
+    -ExistingFunctionStorageAccountName $ExistingFunctionStorageAccountName
 
 $deploymentOutput = $deploymentAttempt.Output
 $roleAssignmentOnlyCreateFailure = $false
@@ -1169,7 +1288,10 @@ if ($LASTEXITCODE -ne 0) {
             -DeployerPrincipalType $deployerPrincipalType `
             -BaseName $BaseName `
             -DeploymentSuffix $DeploymentSuffix `
-            -HostingMode $hostingMode
+            -HostingMode $hostingMode `
+            -DeploymentTagName $(if ($IncludeTags) { $DeploymentTagName } else { "" }) `
+            -DeploymentTagValue $(if ($IncludeTags) { $DeploymentTagValue } else { "" }) `
+            -ExistingFunctionStorageAccountName $ExistingFunctionStorageAccountName
 
         $deploymentOutput = $deploymentAttempt.Output
         if ($deploymentAttempt.ExitCode -ne 0) {
@@ -1367,6 +1489,19 @@ if ([string]::IsNullOrWhiteSpace($blobOwnerAssignment)) {
     exit 1
 }
 
+if ($IncludeTags) {
+    Write-Host "Ensuring Function storage account has deployment tag $DeploymentTagName=$DeploymentTagValue..." -ForegroundColor Yellow
+    az tag update `
+        --resource-id $storageAccountId `
+        --operation Merge `
+        --tags "$DeploymentTagName=$DeploymentTagValue" `
+        --only-show-errors `
+        --output none
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to merge deployment tag onto Function storage account '$storageAccountName'."
+    }
+}
+
 if ($hostingMode -eq 'FlexConsumption') {
     Write-Host "Removing app settings unsupported by Flex Consumption before publish..." -ForegroundColor Yellow
     az functionapp config appsettings delete `
@@ -1416,6 +1551,7 @@ try {
         try {
             if ($hostingMode -eq 'FlexConsumption') {
                 $script:LastFlexPublishExitCode = 1
+                Ensure-StoragePublicNetworkAccess -StorageAccountName $storageAccountName -ResourceGroupName $ResourceGroupName
                 Publish-FlexFunctionApp -FunctionAppName $functionAppName -ResourceGroupName $ResourceGroupName -FunctionAppDirectory $funcAppDir 2>&1 | Tee-Object -FilePath $publishLogPath
                 $publishExitCode = $script:LastFlexPublishExitCode
             } else {

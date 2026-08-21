@@ -128,6 +128,10 @@ builder.Services.AddScoped<IAnalysisRunner>(services =>
     services.GetRequiredService<Microsoft.Extensions.Options.IOptions<FunctionAnalysisOptions>>().Value.Enabled
         ? services.GetRequiredService<FunctionAnalysisRunner>()
         : services.GetRequiredService<FoundryAnalysisService>());
+builder.Services.AddScoped<IFollowUpChatService>(services =>
+    services.GetRequiredService<Microsoft.Extensions.Options.IOptions<FunctionAnalysisOptions>>().Value.Enabled
+        ? services.GetRequiredService<FunctionAnalysisRunner>()
+        : services.GetRequiredService<FoundryAnalysisService>());
 builder.Services.AddScoped<AnalysisStore>();
 
 // Per-circuit cache of the last Comments fetch (so opening a comment + going back doesn't re-fetch).

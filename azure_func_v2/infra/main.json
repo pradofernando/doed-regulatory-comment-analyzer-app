@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "6027246012929111327"
+      "templateHash": "7662204421233793908"
     }
   },
   "parameters": {
@@ -156,11 +156,34 @@
       "metadata": {
         "description": "Cosmos DB summary container. Its partition key must be /documentIdNormalized."
       }
+    },
+    "resourceTagName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional tag name applied to taggable top-level resources. Leave empty to omit the extra tag."
+      }
+    },
+    "resourceTagValue": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional tag value applied to taggable top-level resources when resourceTagName is set."
+      }
+    },
+    "existingFunctionStorageAccountName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Existing Function storage account name in this resource group. Leave empty to create and manage a new storage account for the Function stack."
+      }
     }
   },
   "variables": {
     "uniqueSuffix": "[if(empty(parameters('deploymentSuffix')), uniqueString(resourceGroup().id), take(toLower(replace(replace(parameters('deploymentSuffix'), '-', ''), '_', '')), 13))]",
-    "storageAccountName": "[take(replace(format('st{0}{1}', parameters('baseName'), variables('uniqueSuffix')), '-', ''), 24)]",
+    "generatedStorageAccountName": "[take(replace(format('st{0}{1}', parameters('baseName'), variables('uniqueSuffix')), '-', ''), 24)]",
+    "useExistingFunctionStorageAccount": "[not(empty(parameters('existingFunctionStorageAccountName')))]",
+    "storageAccountName": "[if(variables('useExistingFunctionStorageAccount'), parameters('existingFunctionStorageAccountName'), variables('generatedStorageAccountName'))]",
     "keyVaultName": "[take(format('kv-{0}-{1}', parameters('baseName'), variables('uniqueSuffix')), 24)]",
     "appInsightsName": "[format('appi-{0}', parameters('baseName'))]",
     "logAnalyticsName": "[format('law-{0}', parameters('baseName'))]",
@@ -175,15 +198,18 @@
     "hostingPlanName": "[if(variables('usePremiumHosting'), format('asp-{0}-{1}', parameters('baseName'), variables('hostingModeNamePart')), format('asp-{0}', parameters('baseName')))]",
     "hostingPlanSkuName": "[if(variables('usePremiumHosting'), 'EP1', 'FC1')]",
     "hostingPlanSkuTier": "[if(variables('usePremiumHosting'), 'ElasticPremium', 'FlexConsumption')]",
+    "tags": "[union(createObject('workload', 'doed-regulatory-comments-function', 'managedBy', 'bicep'), if(empty(parameters('resourceTagName')), createObject(), createObject(format('{0}', parameters('resourceTagName')), parameters('resourceTagValue'))))]",
     "premiumRuntimeAppSettings": "[if(variables('usePremiumHosting'), createArray(createObject('name', 'FUNCTIONS_WORKER_RUNTIME', 'value', 'python'), createObject('name', 'FUNCTIONS_EXTENSION_VERSION', 'value', '~4'), createObject('name', 'WEBSITE_RUN_FROM_PACKAGE', 'value', '1'), createObject('name', 'SCM_DO_BUILD_DURING_DEPLOYMENT', 'value', 'true'), createObject('name', 'ENABLE_ORYX_BUILD', 'value', 'true')), createArray())]",
     "deploymentScriptIdentityName": "[format('id-deploy-{0}', parameters('baseName'))]"
   },
   "resources": [
     {
+      "condition": "[not(variables('useExistingFunctionStorageAccount'))]",
       "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-01-01",
       "name": "[variables('storageAccountName')]",
       "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "sku": {
         "name": "Standard_LRS"
       },
@@ -231,6 +257,7 @@
       "apiVersion": "2023-07-01",
       "name": "[variables('keyVaultName')]",
       "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "properties": {
         "sku": {
           "family": "A",
@@ -259,6 +286,7 @@
       "apiVersion": "2022-10-01",
       "name": "[variables('logAnalyticsName')]",
       "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "properties": {
         "sku": {
           "name": "PerGB2018"
@@ -271,6 +299,7 @@
       "apiVersion": "2020-02-02",
       "name": "[variables('appInsightsName')]",
       "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "kind": "web",
       "properties": {
         "Application_Type": "web",
@@ -286,6 +315,7 @@
       "apiVersion": "2023-10-01-preview",
       "name": "[variables('documentIntelligenceName')]",
       "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "sku": {
         "name": "S0"
       },
@@ -301,6 +331,7 @@
       "apiVersion": "2022-09-01",
       "name": "[variables('searchServiceName')]",
       "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "identity": {
         "type": "SystemAssigned"
       },
@@ -325,6 +356,7 @@
       "apiVersion": "2025-06-01",
       "name": "[variables('aiFoundryName')]",
       "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "sku": {
         "name": "S0"
       },
@@ -394,9 +426,10 @@
     },
     {
       "type": "Microsoft.Web/serverfarms",
-      "apiVersion": "2023-12-01",
+      "apiVersion": "2024-04-01",
       "name": "[variables('hostingPlanName')]",
       "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "sku": {
         "name": "[variables('hostingPlanSkuName')]",
         "tier": "[variables('hostingPlanSkuTier')]",
@@ -413,6 +446,7 @@
       "apiVersion": "2023-12-01",
       "name": "[variables('functionAppName')]",
       "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
       "kind": "functionapp,linux",
       "identity": {
         "type": "SystemAssigned"
@@ -431,7 +465,7 @@
             ],
             "supportCredentials": false
           },
-          "appSettings": "[concat(variables('premiumRuntimeAppSettings'), createArray(createObject('name', 'AzureWebJobsStorage__accountName', 'value', variables('storageAccountName')), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'APPINSIGHTS_INSTRUMENTATIONKEY', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString), createObject('name', 'REGULATIONS_GOV_API_KEY', 'value', format('@Microsoft.KeyVault(VaultName={0};SecretName=regulations-gov-api-key)', variables('keyVaultName'))), createObject('name', 'DOCUMENT_ID', 'value', parameters('documentId')), createObject('name', 'BATCH_SIZE', 'value', string(parameters('batchSize'))), createObject('name', 'MAX_COMMENTS', 'value', ''), createObject('name', 'AZURE_STORAGE_ACCOUNT_NAME', 'value', variables('storageAccountName')), createObject('name', 'COSMOS_ENDPOINT', 'value', if(empty(parameters('cosmosAccountName')), '', format('https://{0}.documents.azure.com:443/', parameters('cosmosAccountName')))), createObject('name', 'COSMOS_DATABASE_NAME', 'value', parameters('cosmosDatabaseName')), createObject('name', 'COSMOS_RUNS_CONTAINER_NAME', 'value', parameters('cosmosRunsContainerName')), createObject('name', 'COSMOS_SUMMARIES_CONTAINER_NAME', 'value', parameters('cosmosSummariesContainerName')), createObject('name', 'ANALYSIS_PAYLOAD_CONTAINER_NAME', 'value', 'analysis-run-payloads'), createObject('name', 'ANALYSIS_PAYLOAD_OFFLOAD_THRESHOLD_BYTES', 'value', '524288'), createObject('name', 'DOCUMENTINTELLIGENCE_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('documentIntelligenceName')), '2023-10-01-preview').endpoint), createObject('name', 'FOUNDRY_PROJECT_ENDPOINT', 'value', variables('foundryProjectEndpoint')), createObject('name', 'CATEGORIZATION_AGENT_NAME', 'value', 'RegulatoryCommentCategorizationAgent'), createObject('name', 'CATEGORIZATION_AGENT_VERSION', 'value', '1'), createObject('name', 'CATEGORIZATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'GROUPING_AGENT_NAME', 'value', 'RegulatoryCommentGroupingAgent'), createObject('name', 'GROUPING_AGENT_VERSION', 'value', '1'), createObject('name', 'GROUPING_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'VALIDATION_AGENT_NAME', 'value', ''), createObject('name', 'VALIDATION_AGENT_VERSION', 'value', '1'), createObject('name', 'VALIDATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'ALLOWED_MODEL_DEPLOYMENTS', 'value', join(union(createArray(parameters('preferredAgentModelDeploymentName')), createArray('gpt-4o')), ','))))]"
+          "appSettings": "[concat(variables('premiumRuntimeAppSettings'), createArray(createObject('name', 'AzureWebJobsStorage__accountName', 'value', variables('storageAccountName')), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'APPINSIGHTS_INSTRUMENTATIONKEY', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString), createObject('name', 'REGULATIONS_GOV_API_KEY', 'value', format('@Microsoft.KeyVault(VaultName={0};SecretName=regulations-gov-api-key)', variables('keyVaultName'))), createObject('name', 'DOCUMENT_ID', 'value', parameters('documentId')), createObject('name', 'BATCH_SIZE', 'value', string(parameters('batchSize'))), createObject('name', 'MAX_COMMENTS', 'value', ''), createObject('name', 'AZURE_STORAGE_ACCOUNT_NAME', 'value', variables('storageAccountName')), createObject('name', 'COSMOS_ENDPOINT', 'value', if(empty(parameters('cosmosAccountName')), '', format('https://{0}.documents.azure.com:443/', parameters('cosmosAccountName')))), createObject('name', 'COSMOS_DATABASE_NAME', 'value', parameters('cosmosDatabaseName')), createObject('name', 'COSMOS_RUNS_CONTAINER_NAME', 'value', parameters('cosmosRunsContainerName')), createObject('name', 'COSMOS_SUMMARIES_CONTAINER_NAME', 'value', parameters('cosmosSummariesContainerName')), createObject('name', 'ANALYSIS_PAYLOAD_CONTAINER_NAME', 'value', 'analysis-run-payloads'), createObject('name', 'ANALYSIS_PAYLOAD_OFFLOAD_THRESHOLD_BYTES', 'value', '524288'), createObject('name', 'DOCUMENTINTELLIGENCE_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('documentIntelligenceName')), '2023-10-01-preview').endpoint), createObject('name', 'FOUNDRY_PROJECT_ENDPOINT', 'value', variables('foundryProjectEndpoint')), createObject('name', 'CATEGORIZATION_AGENT_NAME', 'value', 'RegulatoryCommentCategorizationAgent'), createObject('name', 'CATEGORIZATION_AGENT_VERSION', 'value', '1'), createObject('name', 'CATEGORIZATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'GROUPING_AGENT_NAME', 'value', 'RegulatoryCommentGroupingAgent'), createObject('name', 'GROUPING_AGENT_VERSION', 'value', '1'), createObject('name', 'GROUPING_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'VALIDATION_AGENT_NAME', 'value', ''), createObject('name', 'VALIDATION_AGENT_VERSION', 'value', '1'), createObject('name', 'VALIDATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'FOLLOWUP_AGENT_NAME', 'value', 'RegulatoryCommentFollowUpAgent'), createObject('name', 'FOLLOWUP_AGENT_VERSION', 'value', '1'), createObject('name', 'FOLLOWUP_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'ALLOWED_MODEL_DEPLOYMENTS', 'value', join(union(createArray(parameters('preferredAgentModelDeploymentName')), createArray('gpt-4o')), ','))))]"
         }
       },
       "dependsOn": [
@@ -439,8 +473,7 @@
         "[resourceId('Microsoft.CognitiveServices/accounts', variables('documentIntelligenceName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
-        "[resourceId('Microsoft.CognitiveServices/accounts/deployments', variables('aiFoundryName'), 'gpt-4o')]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+        "[resourceId('Microsoft.CognitiveServices/accounts/deployments', variables('aiFoundryName'), 'gpt-4o')]"
       ]
     },
     {
@@ -498,8 +531,7 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
       ]
     },
     {
@@ -512,10 +544,7 @@
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
         "principalId": "[parameters('deployerPrincipalId')]",
         "principalType": "[parameters('deployerPrincipalType')]"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
-      ]
+      }
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
@@ -528,8 +557,7 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]"
       ]
     },
     {
@@ -543,8 +571,7 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
       ]
     },
     {
@@ -557,10 +584,7 @@
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
         "principalId": "[parameters('deployerPrincipalId')]",
         "principalType": "[parameters('deployerPrincipalType')]"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
-      ]
+      }
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
@@ -573,8 +597,7 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
       ]
     },
     {
@@ -587,10 +610,7 @@
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
         "principalId": "[parameters('deployerPrincipalId')]",
         "principalType": "[parameters('deployerPrincipalType')]"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
-      ]
+      }
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
