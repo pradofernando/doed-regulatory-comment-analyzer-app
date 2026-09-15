@@ -24,6 +24,9 @@ param(
     [string]$Location = "eastus",
 
     [Parameter(Mandatory=$false)]
+    [string]$FrontendLocation = "",
+
+    [Parameter(Mandatory=$false)]
     [string]$RegulationsGovApiKey = $env:REGS_API_KEY,
 
     [Parameter(Mandatory=$false)]
@@ -126,6 +129,9 @@ $env:AZURE_CORE_ONLY_SHOW_ERRORS = 'true'
 
 if ([string]::IsNullOrWhiteSpace($FrontendResourceGroupName)) {
     $FrontendResourceGroupName = $ResourceGroupName
+}
+if ([string]::IsNullOrWhiteSpace($FrontendLocation)) {
+    $FrontendLocation = $Location
 }
 if ([string]::IsNullOrWhiteSpace($CosmosResourceGroupName)) {
     $CosmosResourceGroupName = $FrontendResourceGroupName
@@ -292,7 +298,8 @@ Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "Subscription:             $($account.name)" -ForegroundColor White
 Write-Host "Function resource group:  $ResourceGroupName" -ForegroundColor White
 Write-Host "Frontend resource group:  $FrontendResourceGroupName" -ForegroundColor White
-Write-Host "Location:                 $Location" -ForegroundColor White
+Write-Host "Function location:        $Location" -ForegroundColor White
+Write-Host "Frontend location:        $FrontendLocation" -ForegroundColor White
 Write-Host "Frontend persistence:     $PersistenceProvider" -ForegroundColor White
 Write-Host ""
 
@@ -403,6 +410,8 @@ $groupingAgentName = Get-RequiredSetting -Settings $functionSettings -Name 'GROU
 $groupingAgentVersion = Get-RequiredSetting -Settings $functionSettings -Name 'GROUPING_AGENT_VERSION'
 $validationAgentName = Get-OptionalSetting -Settings $functionSettings -Name 'VALIDATION_AGENT_NAME'
 $validationAgentVersion = Get-OptionalSetting -Settings $functionSettings -Name 'VALIDATION_AGENT_VERSION' -Default 'latest'
+$deployedFollowUpAgentName = Get-OptionalSetting -Settings $functionSettings -Name 'FOLLOWUP_AGENT_NAME'
+$deployedFollowUpAgentVersion = Get-OptionalSetting -Settings $functionSettings -Name 'FOLLOWUP_AGENT_VERSION' -Default 'latest'
 $modelDeploymentName = Get-OptionalSetting -Settings $functionSettings -Name 'CATEGORIZATION_AGENT_MODEL' -Default 'gpt-4o'
 $functionStorageAccountName = Get-RequiredSetting -Settings $functionSettings -Name 'AZURE_STORAGE_ACCOUNT_NAME'
 $functionAppUrl = "https://$functionAppName.azurewebsites.net"
@@ -421,26 +430,6 @@ if ($useFunctionAnalysisBackend) {
 }
 $analysisPayloadContainerName = 'analysis-run-payloads'
 $analysisPayloadContainerUri = "https://$functionStorageAccountName.blob.core.windows.net/$analysisPayloadContainerName"
-
-if ($SkipFunctionDeployment -and [string]::IsNullOrWhiteSpace($FollowUpAgentName)) {
-    $existingFrontendAppName = az resource list `
-        --resource-group $FrontendResourceGroupName `
-        --resource-type 'Microsoft.Web/sites' `
-        --query "[?starts_with(name, '$FrontendBaseName-app-')].name | [0]" `
-        -o tsv
-    if (-not [string]::IsNullOrWhiteSpace($existingFrontendAppName)) {
-        $deployedFollowUpAgentName = az webapp config appsettings list `
-            --name $existingFrontendAppName `
-            --resource-group $FrontendResourceGroupName `
-            --query "[?name=='Api__FollowUpAgentName'].value | [0]" `
-            -o tsv
-        $deployedFollowUpAgentVersion = az webapp config appsettings list `
-            --name $existingFrontendAppName `
-            --resource-group $FrontendResourceGroupName `
-            --query "[?name=='Api__FollowUpAgentVersion'].value | [0]" `
-            -o tsv
-    }
-}
 
 $effectiveFollowUpAgentName = if ([string]::IsNullOrWhiteSpace($FollowUpAgentName)) { $deployedFollowUpAgentName } else { $FollowUpAgentName }
 $effectiveFollowUpAgentVersion = if ([string]::IsNullOrWhiteSpace($FollowUpAgentName)) { $deployedFollowUpAgentVersion } else { $FollowUpAgentVersion }
@@ -481,7 +470,7 @@ Write-Host "============================================" -ForegroundColor Yello
 
 $rgExists = az group exists --name $FrontendResourceGroupName
 if ($rgExists -eq 'false') {
-    Invoke-NativeChecked -Command 'az' -Arguments @('group', 'create', '--name', $FrontendResourceGroupName, '--location', $Location, '--output', 'none') -FailureMessage "Failed to create frontend resource group."
+    Invoke-NativeChecked -Command 'az' -Arguments @('group', 'create', '--name', $FrontendResourceGroupName, '--location', $FrontendLocation, '--output', 'none') -FailureMessage "Failed to create frontend resource group."
 }
 
 if ($PersistenceProvider -eq 'Cosmos' -and $ProvisionCosmosResources) {
@@ -512,7 +501,7 @@ try {
         contentVersion = '1.0.0.0'
         parameters = [ordered]@{
             baseName = @{ value = $FrontendBaseName }
-            location = @{ value = $Location }
+            location = @{ value = $FrontendLocation }
             appServicePlanSku = @{ value = $FrontendSku }
             regulationsGovApiKey = @{ value = $RegulationsGovApiKey }
             foundryProjectEndpoint = @{ value = $foundryEndpoint }

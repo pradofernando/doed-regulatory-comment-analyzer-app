@@ -26,6 +26,7 @@ from cosmos_runs import (
     derive_overall_sentiment,
     utc_now,
 )
+from structured_responses import select_json_object
 
 app = func.FunctionApp()
 
@@ -254,6 +255,19 @@ def get_comment_with_attachments(comment_id: str, api_key: str) -> Optional[Dict
         return None
 
 
+def get_detail_comment_text(details: Optional[Dict]) -> str:
+    """Read comment text from a Regulations.gov single-comment response."""
+    if not isinstance(details, dict):
+        return ""
+    data = details.get("data")
+    if not isinstance(data, dict):
+        return ""
+    attributes = data.get("attributes")
+    if not isinstance(attributes, dict):
+        return ""
+    return str(attributes.get("comment") or "").strip()
+
+
 def consolidate_comments_to_csv(comments: List[Dict], api_key: str) -> List[Dict]:
     """Process comments and extract text from attachments"""
     csv_rows = []
@@ -282,6 +296,10 @@ def consolidate_comments_to_csv(comments: List[Dict], api_key: str) -> List[Dict
             details = get_comment_with_attachments(comment_id, api_key)
             
             if details:
+                detail_text = get_detail_comment_text(details)
+                if not combined_text and detail_text:
+                    combined_text = detail_text
+
                 included = details.get('included', [])
                 attachments = [item for item in included if item.get('type') == 'attachments']
                 
@@ -598,19 +616,31 @@ def validate_and_normalize_grouped_analysis(analysis: Dict[str, Any], expected_t
     return analysis
 
 
-def extract_json_payload(response_text: str) -> str:
-    """Extract JSON content from a model response that may include markdown fences."""
-    cleaned_text = response_text.strip()
-    if "```json" in cleaned_text:
-        start = cleaned_text.find("```json") + 7
-        end = cleaned_text.find("```", start)
-        cleaned_text = cleaned_text[start:end].strip()
-    elif "```" in cleaned_text:
-        start = cleaned_text.find("```") + 3
-        end = cleaned_text.find("```", start)
-        cleaned_text = cleaned_text[start:end].strip()
+def parse_categorization_payload(response_text: str) -> Optional[Dict[str, Any]]:
+    """Find a categorization object without assuming a policy domain or response wrapper."""
+    return select_json_object(
+        response_text,
+        lambda value: any(
+            key in value
+            for key in ("primary_theme", "canonical_reason", "stance", "comment_summary")
+        ),
+    )
 
-    return cleaned_text
+
+def parse_grouped_analysis_payload(response_text: str) -> Optional[Dict[str, Any]]:
+    """Find a grouped-analysis object without assuming a response wrapper."""
+    return select_json_object(
+        response_text,
+        lambda value: "categories" in value or "theme_groups" in value,
+    )
+
+
+def parse_validation_payload(response_text: str) -> Optional[Dict[str, Any]]:
+    """Find a validator result object without assuming a response wrapper."""
+    return select_json_object(
+        response_text,
+        lambda value: str(value.get("status", "")).lower() in {"pass", "corrected"},
+    )
 
 
 def is_non_substantive_comment_text(comment_text: str) -> bool:
@@ -739,12 +769,9 @@ async def repair_grouped_analysis(
 
     repair_response = await run_foundry_agent(agent, session, repair_prompt)
 
-    repair_text = extract_json_payload(repair_response)
-
-    try:
-        repaired_analysis = json.loads(repair_text)
-    except Exception as e:
-        logging.warning(f"Could not parse repaired grouped analysis JSON: {e}")
+    repaired_analysis = parse_grouped_analysis_payload(repair_response)
+    if repaired_analysis is None:
+        logging.warning("Could not find repaired grouped analysis JSON in agent response")
         return None
 
     return repaired_analysis
@@ -773,15 +800,12 @@ async def validate_grouped_analysis_with_agent(
         )
 
         validation_response = await run_foundry_agent(agent, session, validation_prompt)
-        validation_text = extract_json_payload(validation_response)
-
-        try:
-            parsed_validation = json.loads(validation_text)
-        except Exception as e:
-            logging.warning(f"Could not parse validator output JSON: {e}")
+        parsed_validation = parse_validation_payload(validation_response)
+        if parsed_validation is None:
+            logging.warning("Could not find validator output JSON in agent response")
             return grouped_analysis
 
-        status = parsed_validation.get("status")
+        status = str(parsed_validation.get("status", "")).lower()
         validated_analysis = parsed_validation.get("collective_analysis")
 
         if status not in {"pass", "corrected"} or not isinstance(validated_analysis, dict):
@@ -825,18 +849,17 @@ async def categorize_with_agent(
             # Use a fresh session per comment to avoid context accumulation across calls
             full_response = await run_foundry_agent(agent, AgentSession(), row_string)
 
-            categorization_text = extract_json_payload(full_response)
-
-            if is_refusal_or_error_response(categorization_text):
+            parsed_categorization = parse_categorization_payload(full_response)
+            if parsed_categorization is not None:
+                categorization_json = parsed_categorization
+            elif is_refusal_or_error_response(full_response):
                 logging.warning("Categorization agent returned refusal/error text for comment %s; normalizing to non-substantive output", idx)
                 categorization_json = build_non_substantive_categorization(
                     "The categorization agent returned an unusable refusal/error string instead of analyzable structured output."
                 )
             else:
-                try:
-                    categorization_json = json.loads(categorization_text)
-                except Exception:
-                    categorization_json = categorization_text
+                logging.warning("Categorization agent response for comment %s did not contain a contract-compatible JSON object", idx)
+                categorization_json = full_response
 
             categorizations.append({
                 "submission_number": idx,
@@ -845,7 +868,8 @@ async def categorize_with_agent(
                 "comment_id": row.get("comment_id", ""),
                 "text_source": "inline+attachment" if row.get("has_attachments") else "inline",
                 "attachments_extracted": 1 if row.get("has_attachments") else 0,
-                "categorization": categorization_json
+                "categorization": categorization_json,
+                "raw_response": full_response,
             })
     
     return categorizations
@@ -893,13 +917,9 @@ async def group_categorizations(
             if is_last_batch:
                 final_analysis = batch_response
 
-        analysis_text = extract_json_payload(final_analysis)
-
-        try:
-            parsed_analysis = json.loads(analysis_text)
-        except Exception as e:
-            logging.warning(f"Could not parse JSON: {e}")
-            parsed_analysis = None
+        parsed_analysis = parse_grouped_analysis_payload(final_analysis)
+        if parsed_analysis is None:
+            logging.warning("Could not find grouped analysis JSON in agent response")
 
         if parsed_analysis:
             try:
@@ -933,7 +953,7 @@ async def group_categorizations(
                 else:
                     raise validation_error
 
-        return parsed_analysis if parsed_analysis else analysis_text
+        return parsed_analysis if parsed_analysis else final_analysis
 
 
 async def run_analysis_workflow(
@@ -1009,9 +1029,10 @@ def convert_grouped_analysis_to_csv(grouped_data: Dict) -> str:
     
     # If analysis is a string (unparsed), try to parse it
     if isinstance(analysis, str):
-        try:
-            analysis = json.loads(analysis)
-        except:
+        parsed_analysis = parse_grouped_analysis_payload(analysis)
+        if parsed_analysis is not None:
+            analysis = parsed_analysis
+        else:
             # If can't parse, create simple summary CSV
             writer = csv.writer(output)
             writer.writerow(['Analysis Summary'])

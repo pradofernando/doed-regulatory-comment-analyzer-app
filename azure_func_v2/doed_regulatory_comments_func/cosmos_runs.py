@@ -9,6 +9,7 @@ from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFo
 from azure.core.exceptions import ResourceExistsError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
+from structured_responses import select_json_object
 
 
 FRONTEND_SCHEMA_VERSION = 2
@@ -233,8 +234,10 @@ def serialize_categorization_payload(document: Mapping[str, Any]) -> bytes:
 
 def _map_categorization(item: Mapping[str, Any]) -> Dict[str, Any]:
     parsed = item.get("categorization", {})
-    raw_response = parsed if isinstance(parsed, str) else json.dumps(parsed, ensure_ascii=False)
-    parsed_json = raw_response if not isinstance(parsed, str) else "{}"
+    raw_response = str(item.get("raw_response") or "")
+    if not raw_response:
+        raw_response = parsed if isinstance(parsed, str) else json.dumps(parsed, ensure_ascii=False)
+    parsed_json = _parse_categorization_json(raw_response) if isinstance(parsed, str) else raw_response
     return {
         "submissionNumber": int(item.get("submission_number", 0)),
         "commentId": str(item.get("comment_id", "")),
@@ -243,6 +246,17 @@ def _map_categorization(item: Mapping[str, Any]) -> Dict[str, Any]:
         "textSource": str(item.get("text_source", "inline")),
         "attachmentsExtracted": int(item.get("attachments_extracted", 0)),
     }
+
+
+def _parse_categorization_json(raw_response: str) -> str:
+    parsed = select_json_object(
+        raw_response,
+        lambda value: any(
+            key in value
+            for key in ("primary_theme", "canonical_reason", "stance", "comment_summary")
+        ),
+    )
+    return json.dumps(parsed, ensure_ascii=False) if parsed is not None else "{}"
 
 
 def _map_theme_group(item: Mapping[str, Any], position: int) -> Dict[str, Any]:

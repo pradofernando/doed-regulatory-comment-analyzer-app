@@ -382,8 +382,16 @@ else
     <h3 class="subsection-title">Per-comment categorizations</h3>
     <details class="surface-card">
         <summary>Show all @run.Categorizations.Count categorizations</summary>
-        <div class="table-responsive mt-2">
-            <table class="table table-sm align-middle">
+        <div class="table-responsive categorization-table-wrap mt-2">
+            <table class="table align-middle categorization-table">
+                <colgroup>
+                    <col class="categorization-table__number" />
+                    <col class="categorization-table__id" />
+                    <col class="categorization-table__theme" />
+                    <col class="categorization-table__reason" />
+                    <col class="categorization-table__stance" />
+                    <col class="categorization-table__summary" />
+                </colgroup>
                 <thead>
                     <tr>
                         <th>#</th>
@@ -476,6 +484,21 @@ else
     .sub-chip--more { border:0; background:var(--color-surface-muted); color:var(--color-text-muted); cursor:pointer; font-family:inherit; }
     .sub-chip--more:hover { color:var(--color-text); text-decoration:underline; }
     .submission-number-link { display:inline-flex; min-width:1.75rem; justify-content:center; font-weight:700; }
+
+    .categorization-table-wrap { border: 1px solid var(--color-border); border-radius: 6px; }
+    .categorization-table { width: 100%; min-width: 1000px; table-layout: fixed; margin: 0; }
+    .categorization-table__number { width: 4%; }
+    .categorization-table__id { width: 18%; }
+    .categorization-table__theme { width: 16%; }
+    .categorization-table__reason { width: 19%; }
+    .categorization-table__stance { width: 8%; }
+    .categorization-table__summary { width: 35%; }
+    .categorization-table :is(th, td) { padding: .65rem .75rem; line-height: 1.45; vertical-align: top; overflow-wrap: anywhere; }
+    .categorization-table :is(th, td) + :is(th, td) { border-left: 1px solid var(--color-border); }
+    .categorization-table thead th { vertical-align: middle; }
+    .categorization-table tbody td:first-child { text-align: center; vertical-align: middle; }
+    .categorization-table tbody td:nth-child(2) { white-space: nowrap; }
+    .categorization-table tbody td:nth-child(5) { white-space: nowrap; }
 
     .pattern-item { padding: .25rem 0; line-height: 1.45; }
     .raw { white-space: pre-wrap; font-size: .85rem; color: var(--color-text); margin: 0; }

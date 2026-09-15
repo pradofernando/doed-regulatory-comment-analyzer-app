@@ -49,6 +49,20 @@ public class FoundryResponseContractTests
         Assert.Equal(0, result.OutputTokens);
     }
 
+      [Theory]
+      [InlineData("{\"query\":\"methodology\",\"source\":\"knowledge_base\"}\n{\"primary_theme\":\"Oversight\",\"stance\":\"opposing\"}", "Oversight")]
+      [InlineData("Searching methodology, then analyzing.{\"primary_theme\":\"Transparency\",\"stance\":\"opposing\"}", "Transparency")]
+      [InlineData("[{\"event\":\"tool\"},{\"output\":{\"primary_theme\":\"Wrapped\",\"stance\":\"opposing\"}}]", "Wrapped")]
+      [InlineData("{not json} then ```json\n[{\"primary_theme\":\"Fenced array\",\"stance\":\"opposing\"}]\n```", "Fenced array")]
+      [InlineData("```json\n{\"event\":\"tool\"}\n```\nFinal: {\"primary_theme\":\"After fence\",\"stance\":\"opposing\"}", "After fence")]
+      public void CategorizationParser_SelectsResultObjectAfterToolOutput(string response, string expectedTheme)
+      {
+        var result = FoundryAnalysisService.ParseCategorizationResponse(response);
+
+        Assert.Equal(expectedTheme, result["primary_theme"]);
+        Assert.Equal("opposing", result["stance"]);
+      }
+
     [Fact]
     public void ValidationCorrection_ReplacesGroupingOnlyWhenContractIsValid()
     {
@@ -70,8 +84,9 @@ public class FoundryResponseContractTests
         var corrected = FoundryAnalysisService.ApplyValidationResponseForTesting(
             original,
             """
+            {"event":"tool"}
             {
-              "status": "corrected",
+              "status": "CORRECTED",
               "collective_analysis": {
                 "overall_summary": "Corrected",
                 "theme_groups": [{

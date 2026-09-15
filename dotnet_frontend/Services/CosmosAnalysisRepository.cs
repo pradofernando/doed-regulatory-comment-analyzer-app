@@ -478,7 +478,7 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
                 SubmissionNumber = item.SubmissionNumber,
                 CommentId = item.CommentId,
                 RawResponse = item.RawResponse,
-                Parsed = Deserialize<Dictionary<string, object?>>(item.ParsedJson) ?? new(),
+                Parsed = DeserializeCategorization(item),
                 TextSource = item.TextSource,
                 AttachmentsExtracted = item.AttachmentsExtracted,
             }));
@@ -843,6 +843,14 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
         if (string.IsNullOrWhiteSpace(json)) return default;
         try { return System.Text.Json.JsonSerializer.Deserialize<T>(json, JsonOptions); }
         catch (System.Text.Json.JsonException) { return default; }
+    }
+
+    private static Dictionary<string, object?> DeserializeCategorization(CategorizationDocument item)
+    {
+        var parsed = Deserialize<Dictionary<string, object?>>(item.ParsedJson);
+        return parsed is { Count: > 0 }
+            ? parsed
+            : FoundryAnalysisService.ParseCategorizationResponse(item.RawResponse);
     }
 
     private sealed class AnalysisRunDocument

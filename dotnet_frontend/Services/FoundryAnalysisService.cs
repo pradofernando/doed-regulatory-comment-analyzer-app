@@ -30,6 +30,7 @@ public interface IAnalysisRunner
 /// </summary>
 public sealed class FoundryAnalysisService : IAnalysisRunner, IFollowUpChatService
 {
+    private const int MaxStructuredResponseChars = 1_000_000;
     private readonly ILogger<FoundryAnalysisService> _logger;
     private readonly AttachmentExtractor _attachments;
     private readonly IHttpClientFactory _httpFactory;
@@ -510,61 +511,34 @@ public sealed class FoundryAnalysisService : IAnalysisRunner, IFollowUpChatServi
         return "\"" + value.Replace("\"", "\"\"") + "\"";
     }
 
-    private static string StripFences(string text)
-    {
-        var t = text.Trim();
-        if (t.Contains("```json", StringComparison.OrdinalIgnoreCase))
-        {
-            var i = t.IndexOf("```json", StringComparison.OrdinalIgnoreCase) + 7;
-            var j = t.IndexOf("```", i, StringComparison.Ordinal);
-            if (j > i) return t[i..j].Trim();
-        }
-        else if (t.StartsWith("```"))
-        {
-            var i = t.IndexOf("```", StringComparison.Ordinal) + 3;
-            var j = t.IndexOf("```", i, StringComparison.Ordinal);
-            if (j > i) return t[i..j].Trim();
-        }
-        return t;
-    }
-
     private static Dictionary<string, object?>? TryParseJsonObject(string raw)
     {
-        var clean = StripFences(raw);
-        try
-        {
-            using var doc = JsonDocument.Parse(clean);
-            return JsonElementToDict(doc.RootElement);
-        }
-        catch
-        {
-            return null;
-        }
+        var match = FindJsonObject(raw, IsCategorizationObject);
+        return match is null ? null : JsonElementToDict(match.Value);
     }
+
+    private static bool IsCategorizationObject(JsonElement value) =>
+        value.ValueKind == JsonValueKind.Object &&
+        (value.TryGetProperty("primary_theme", out _) ||
+         value.TryGetProperty("canonical_reason", out _) ||
+         value.TryGetProperty("stance", out _) ||
+         value.TryGetProperty("comment_summary", out _) ||
+         value.TryGetProperty("primary_topic", out _) ||
+         value.TryGetProperty("sentiment", out _));
 
     private static GroupedAnalysis ParseGroupedAnalysis(string raw)
     {
         var result = new GroupedAnalysis { RawResponse = raw };
 
-        var clean = StripFences(raw);
-        if (TryDeserialize(clean, out var direct))
+        var match = FindJsonObject(
+            raw,
+            value => value.TryGetProperty("theme_groups", out _) ||
+                     value.TryGetProperty("overall_summary", out _));
+        if (match is not null && TryDeserialize(match.Value.GetRawText(), out var parsed))
         {
-            direct!.RawResponse = raw;
-            direct.ParsedSuccessfully = true;
-            return direct;
-        }
-
-        foreach (var candidate in ExtractJsonObjectCandidates(raw)
-                     .OrderByDescending(s => s.Length))
-        {
-            if (!candidate.Contains("theme_groups", StringComparison.OrdinalIgnoreCase)
-                && !candidate.Contains("overall_summary", StringComparison.OrdinalIgnoreCase)) continue;
-            if (TryDeserialize(candidate, out var scanned))
-            {
-                scanned!.RawResponse = raw;
-                scanned.ParsedSuccessfully = true;
-                return scanned;
-            }
+            parsed!.RawResponse = raw;
+            parsed.ParsedSuccessfully = true;
+            return parsed;
         }
 
         result.ParsedSuccessfully = false;
@@ -601,10 +575,20 @@ public sealed class FoundryAnalysisService : IAnalysisRunner, IFollowUpChatServi
     {
         try
         {
-            var clean = StripFences(validationResponse);
-            using var doc = JsonDocument.Parse(clean);
-            var root = doc.RootElement;
-            var status = root.TryGetProperty("status", out var statusElement)
+            var root = FindJsonObject(
+                validationResponse,
+                value => value.TryGetProperty("status", out var statusValue) &&
+                         statusValue.ValueKind == JsonValueKind.String &&
+                         statusValue.GetString() is { } statusText &&
+                         (statusText.Equals("pass", StringComparison.OrdinalIgnoreCase) ||
+                          statusText.Equals("corrected", StringComparison.OrdinalIgnoreCase)));
+            if (root is null)
+            {
+                logger.LogWarning("Validation agent response did not contain a valid result object; retaining original grouped analysis.");
+                return original;
+            }
+
+            var status = root.Value.TryGetProperty("status", out var statusElement)
                 && statusElement.ValueKind == JsonValueKind.String
                     ? statusElement.GetString()
                     : null;
@@ -613,14 +597,14 @@ public sealed class FoundryAnalysisService : IAnalysisRunner, IFollowUpChatServi
                 return original;
 
             GroupedAnalysis candidate;
-            if (root.TryGetProperty("collective_analysis", out var collective)
+            if (root.Value.TryGetProperty("collective_analysis", out var collective)
                 && collective.ValueKind == JsonValueKind.Object)
             {
                 candidate = ParseGroupedAnalysis(collective.GetRawText());
             }
             else
             {
-                candidate = ParseGroupedAnalysis(clean);
+                candidate = ParseGroupedAnalysis(root.Value.GetRawText());
             }
 
             var evaluation = AnalysisContractValidator.EvaluateGroupedAnalysis(candidate, expectedTotalComments);
@@ -659,13 +643,63 @@ public sealed class FoundryAnalysisService : IAnalysisRunner, IFollowUpChatServi
         }
     }
 
-    private static IEnumerable<string> ExtractJsonObjectCandidates(string text)
+    private static JsonElement? FindJsonObject(string response, Func<JsonElement, bool> predicate)
+    {
+        if (response.Length > MaxStructuredResponseChars)
+            response = response[^MaxStructuredResponseChars..];
+        var clean = response.Trim();
+        foreach (var candidate in new[] { clean }.Concat(ExtractJsonValueCandidates(clean)))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(candidate);
+                if (TryFindJsonObject(document.RootElement, predicate, out var match))
+                    return match.Clone();
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryFindJsonObject(
+        JsonElement value,
+        Func<JsonElement, bool> predicate,
+        out JsonElement match)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            if (predicate(value))
+            {
+                match = value;
+                return true;
+            }
+            foreach (var property in value.EnumerateObject())
+            {
+                if (TryFindJsonObject(property.Value, predicate, out match)) return true;
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in value.EnumerateArray())
+            {
+                if (TryFindJsonObject(item, predicate, out match)) return true;
+            }
+        }
+
+        match = default;
+        return false;
+    }
+
+    private static IEnumerable<string> ExtractJsonValueCandidates(string text)
     {
         if (string.IsNullOrEmpty(text)) yield break;
         for (var i = 0; i < text.Length; i++)
         {
-            if (text[i] != '{') continue;
-            var depth = 0;
+            if (text[i] is not ('{' or '[')) continue;
+            var closers = new Stack<char>();
             var inString = false;
             var escape = false;
             for (var j = i; j < text.Length; j++)
@@ -675,11 +709,12 @@ public sealed class FoundryAnalysisService : IAnalysisRunner, IFollowUpChatServi
                 if (ch == '\\') { escape = true; continue; }
                 if (ch == '"') { inString = !inString; continue; }
                 if (inString) continue;
-                if (ch == '{') depth++;
-                else if (ch == '}')
+                if (ch == '{') closers.Push('}');
+                else if (ch == '[') closers.Push(']');
+                else if (ch is '}' or ']')
                 {
-                    depth--;
-                    if (depth == 0)
+                    if (closers.Count == 0 || closers.Pop() != ch) break;
+                    if (closers.Count == 0)
                     {
                         yield return text[i..(j + 1)];
                         break;
@@ -935,8 +970,11 @@ public sealed class FoundryAnalysisService : IAnalysisRunner, IFollowUpChatServi
         return FoundryResponsesClient.ParseFoundryResponse(document.RootElement);
     }
 
-    internal static Dictionary<string, object?> ParseCategorizationForTesting(string response) =>
+    internal static Dictionary<string, object?> ParseCategorizationResponse(string response) =>
         TryParseJsonObject(response) ?? new Dictionary<string, object?>();
+
+    internal static Dictionary<string, object?> ParseCategorizationForTesting(string response) =>
+        ParseCategorizationResponse(response);
 
     internal static GroupedAnalysis ParseGroupedAnalysisForTesting(string response) =>
         ParseGroupedAnalysis(response);

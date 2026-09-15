@@ -508,6 +508,68 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   tags: tags
   kind: 'functionapp,linux'
 
+Foundry Project Endpoint: https://aif-doed-comments-2117ea4b90e74.cognitiveservices.azure.com/api/projects/aiproj-doed-comments
+Creating agent versions with Azure AI Projects SDK and Entra auth (attempt 1 of 8)...
+Categorization Agent created: RegulatoryCommentCategorizationAgent:1
+Grouping Agent created: RegulatoryCommentGroupingAgent:1
+Validation Agent created: RegulatoryCommentValidationAgent:1
+Follow-up Q&A Agent created: RegulatoryCommentFollowUpAgent:1
+
+Updating Function App settings with agent endpoint, names, and versions...
+Function App settings updated.
+
+  Foundry Project Endpoint:  https://aif-doed-comments-2117ea4b90e74.cognitiveservices.azure.com/api/projects/aiproj-doed-comments
+  Categorization Agent Name: RegulatoryCommentCategorizationAgent
+  Categorization Agent ID:   RegulatoryCommentCategorizationAgent:1
+  Grouping Agent Name:       RegulatoryCommentGroupingAgent
+  Grouping Agent ID:         RegulatoryCommentGroupingAgent:1
+  Validation Agent Name:     RegulatoryCommentValidationAgent
+  Validation Agent ID:       RegulatoryCommentValidationAgent:1
+  Follow-up Q&A Agent Name:  RegulatoryCommentFollowUpAgent
+  Follow-up Q&A Agent ID:    RegulatoryCommentFollowUpAgent:1
+
+
+============================================
+All done! Your app is fully deployed.
+The function runs daily at 3AM EST (8AM UTC).
+Monitor it at: https://portal.azure.com
+============================================
+
+============================================
+Step 2/4: Reading Function deployment settings
+============================================
+Function App:              func-doed-comments-2117ea4b90e74
+Foundry endpoint:          https://aif-doed-comments-2117ea4b90e74.cognitiveservices.azure.com/api/projects/aiproj-doed-comments
+Categorization agent:      RegulatoryCommentCategorizationAgent v1
+Grouping agent:            RegulatoryCommentGroupingAgent v1
+Validation agent:          RegulatoryCommentValidationAgent v1
+Follow-up Q&A agent:       RegulatoryCommentFollowUpAgent v1
+
+============================================
+Step 3/4: Deploying frontend infrastructure
+============================================
+Previewing frontend Bicep changes...
+InvalidTemplateDeployment - The template deployment 'main' is not valid according to the validation procedure. The following resource provider(s) - 'Microsoft.Web/serverFarms (2024-04-01)' reported preflight validation errors. Tracking id is '12d52812-c657-47a6-a3e8-1e619447bb95'. See inner errors for details.
+ValidationForResourceFailed - Validation failed for a resource. Check 'Error.Details[0]' formore information.
+InternalSubscriptionIsOverQuotaForSku - Operation cannot be completed without additional quota. See https://aka.ms/antquotahelp for instructions on requesting limit increases. 
+Additional details - Location:  
+Current Limit (B1 VMs): 0 
+Current Usage: 0
+Amount required for this deployment (B1 VMs): 1 
+(Minimum) New Limit that you should request to enable this deployment: 1. 
+Note that if you experience multiple scaling operations failing (in addition to this one) and need to accommodate the aggregate quota requirements of these operations, you will need to request a higher quota limit than the one currently displayed.
+Frontend Bicep what-if failed.
+At C:\src\doed-regulatory-comment-analyzer-app\deploy.ps1:188 char:9
++         throw $FailureMessage
++         ~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Frontend Bicep what-if failed.:String) [], 
+    RuntimeException
+    + FullyQualifiedErrorId : Frontend Bicep what-if failed.
+  dependsOn: [
+    storageAccountNew
+    releasesContainer
+  ]
+
   // Enable system-assigned managed identity for secure access to other resources
   identity: {
     type: 'SystemAssigned'
@@ -746,6 +808,9 @@ resource deployerKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-0
 resource functionStorageBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageAccount.id, functionApp.id, 'Storage Blob Data Owner')
   scope: storageAccount
+  dependsOn: [
+    storageAccountNew
+  ]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
     principalId: functionApp.identity.principalId
@@ -756,6 +821,9 @@ resource functionStorageBlobRole 'Microsoft.Authorization/roleAssignments@2022-0
 resource deployerStorageBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deployerPrincipalId) && !empty(deployerPrincipalType)) {
   name: guid(storageAccount.id, deployerPrincipalId, 'Storage Blob Data Contributor')
   scope: storageAccount
+  dependsOn: [
+    storageAccountNew
+  ]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
     principalId: deployerPrincipalId
@@ -766,6 +834,9 @@ resource deployerStorageBlobRole 'Microsoft.Authorization/roleAssignments@2022-0
 resource searchStorageBlobReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageAccount.id, searchService.id, 'Storage Blob Data Reader')
   scope: storageAccount
+  dependsOn: [
+    storageAccountNew
+  ]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')
     principalId: searchService.identity.principalId
@@ -778,6 +849,9 @@ resource searchStorageBlobReaderRole 'Microsoft.Authorization/roleAssignments@20
 resource functionStorageQueueRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageAccount.id, functionApp.id, 'Storage Queue Data Contributor')
   scope: storageAccount
+  dependsOn: [
+    storageAccountNew
+  ]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
     principalId: functionApp.identity.principalId
@@ -788,6 +862,9 @@ resource functionStorageQueueRole 'Microsoft.Authorization/roleAssignments@2022-
 resource deployerStorageQueueRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deployerPrincipalId) && !empty(deployerPrincipalType)) {
   name: guid(storageAccount.id, deployerPrincipalId, 'Storage Queue Data Contributor')
   scope: storageAccount
+  dependsOn: [
+    storageAccountNew
+  ]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
     principalId: deployerPrincipalId
@@ -800,6 +877,9 @@ resource deployerStorageQueueRole 'Microsoft.Authorization/roleAssignments@2022-
 resource functionStorageTableRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageAccount.id, functionApp.id, 'Storage Table Data Contributor')
   scope: storageAccount
+  dependsOn: [
+    storageAccountNew
+  ]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
     principalId: functionApp.identity.principalId
@@ -810,6 +890,9 @@ resource functionStorageTableRole 'Microsoft.Authorization/roleAssignments@2022-
 resource deployerStorageTableRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deployerPrincipalId) && !empty(deployerPrincipalType)) {
   name: guid(storageAccount.id, deployerPrincipalId, 'Storage Table Data Contributor')
   scope: storageAccount
+  dependsOn: [
+    storageAccountNew
+  ]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
     principalId: deployerPrincipalId
