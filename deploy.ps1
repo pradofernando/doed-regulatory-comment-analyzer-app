@@ -323,7 +323,7 @@ if (-not $SkipFunctionDeployment) {
     Write-Host "Step 1/4: Deploying Azure Function v2 stack" -ForegroundColor Yellow
     Write-Host "============================================" -ForegroundColor Yellow
 
-    $agentDeploymentOutputPath = Join-Path $env:TEMP ("doed-agent-deployment-{0}.json" -f ([guid]::NewGuid().ToString('N')))
+    $agentDeploymentOutputPath = Join-Path ([System.IO.Path]::GetTempPath()) ("doed-agent-deployment-{0}.json" -f ([guid]::NewGuid().ToString('N')))
     $functionArgs = @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
