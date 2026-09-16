@@ -46,10 +46,34 @@ param(
     [int]$GptCapacity = 10,
 
     [Parameter(Mandatory=$false)]
+    [string]$AgentModelName = "gpt-5.5",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AgentModelVersion = "2026-04-24",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AgentModelSku = "GlobalStandard",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AgentPythonExecutable = "",
+
+    [Parameter(Mandatory=$false)]
     [string]$DeploymentSuffix = "",
 
     [Parameter(Mandatory=$false)]
     [int]$EmbeddingCapacity = 10,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$EnableMethodologySearch,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$EnableScheduledAnalysis,
+
+    [Parameter(Mandatory=$false)]
+    [string]$MethodologySearchConnectionId = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$MethodologySearchIndexName = "",
 
     [Parameter(Mandatory=$false)]
     [string]$FoundryProjectEndpoint = "",
@@ -78,6 +102,10 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
 }
 $ErrorActionPreference = 'Continue'
 $env:AZURE_CORE_ONLY_SHOW_ERRORS = 'true'
+
+if ([string]::IsNullOrWhiteSpace($MethodologySearchConnectionId) -ne [string]::IsNullOrWhiteSpace($MethodologySearchIndexName)) {
+    throw "Methodology retrieval requires both MethodologySearchConnectionId and MethodologySearchIndexName."
+}
 
 if ($IncludeTags) {
     if ([string]::IsNullOrWhiteSpace($DeploymentTagName)) {
@@ -388,19 +416,22 @@ function Invoke-AgentCreationWorkflow {
     Write-Host "Foundry Project Endpoint: $AiEndpoint" -ForegroundColor Gray
 
     $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-    $pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
-    if (-not (Test-Path $pythonExe)) {
-        $pythonExe = "python"
+    $pythonExe = $AgentPythonExecutable
+    if ([string]::IsNullOrWhiteSpace($pythonExe)) {
+        $pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
+        if (-not (Test-Path $pythonExe)) { $pythonExe = "python" }
     }
 
     $agentCreationRequirements = Join-Path $PSScriptRoot "requirements-agent-creation.txt"
-    & $pythonExe -c "import azure.ai.projects; import azure.identity" 2>$null
+    & $pythonExe -c "from importlib.metadata import version; from azure.ai.projects.models import PromptAgentDefinition, AzureAISearchTool, AzureAISearchToolResource, AISearchIndexResource; import azure.identity; assert version('azure-ai-projects') == '2.4.0'" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Installing agent-creation Python dependencies..." -ForegroundColor Yellow
         & $pythonExe -m pip install --disable-pip-version-check -r $agentCreationRequirements
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to install agent-creation dependencies from $agentCreationRequirements"
         }
+        & $pythonExe -c "from importlib.metadata import version; from azure.ai.projects.models import PromptAgentDefinition, AzureAISearchTool, AzureAISearchToolResource, AISearchIndexResource; assert version('azure-ai-projects') == '2.4.0'"
+        if ($LASTEXITCODE -ne 0) { throw "The configured Python interpreter does not have the required Foundry agent SDK." }
     }
 
     $agentDefinitionsPayload = @()
@@ -413,6 +444,8 @@ function Invoke-AgentCreationWorkflow {
             description = $agentDefinition.Description
             model = $ModelDeployment
             instructions = (Normalize-AgentPrompt -Prompt $agentPrompt)
+            search_connection_id = $MethodologySearchConnectionId
+            search_index_name = $MethodologySearchIndexName
         }
     }
 
@@ -482,11 +515,12 @@ function Invoke-AgentCreationWorkflow {
 
         if ($createdAgents.ContainsKey('CATEGORIZATION') `
             -and $createdAgents.ContainsKey('GROUPING') `
+            -and $createdAgents.ContainsKey('VALIDATION') `
             -and $createdAgents.ContainsKey('FOLLOWUP')) {
             Write-Host ""
             Write-Host "Updating Function App settings with agent endpoint, names, and versions..." -ForegroundColor Yellow
 
-            $allowedModelDeployments = (@('gpt-4o', $ModelDeployment) |
+            $allowedModelDeployments = (@($ModelDeployment) |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
                 Select-Object -Unique) -join ','
 
@@ -559,7 +593,7 @@ function Invoke-AgentCreationWorkflow {
             Write-Host "  Follow-up Q&A Agent ID:    $($createdAgents['FOLLOWUP'].Id)" -ForegroundColor DarkGray
         } else {
             Write-Host ""
-            throw "One or more required Foundry agents failed to create: categorization, grouping, or follow-up Q&A."
+            throw "One or more required Foundry agents failed to create: categorization, grouping, validation, or follow-up Q&A."
         }
     } finally {
         if (Test-Path $definitionsFile) {
@@ -744,28 +778,21 @@ function New-FunctionZipPackage {
     $packageSource = Join-Path $packageRoot "src"
     $zipPath = Join-Path $packageRoot "functionapp.zip"
 
-    New-Item -ItemType Directory -Path $packageSource -Force | Out-Null
+    New-Item -ItemType Directory -Path $packageSource -Force -ErrorAction Stop | Out-Null
 
-    Get-ChildItem -Path $FunctionAppDirectory -Force | Where-Object {
-        $_.Name -notin @(
-            'local.settings.json',
-            '.venv',
-            '.venv311',
-            '.python_packages',
-            '__pycache__'
-        )
-    } | ForEach-Object {
-        Copy-Item -Path $_.FullName -Destination $packageSource -Recurse -Force
+    $runtimeFiles = @(
+        'host.json', 'requirements.txt', 'function_app.py', 'analysis_requests.py',
+        'cosmos_runs.py', 'structured_responses.py', 'source_evidence.py'
+    )
+    foreach ($file in $runtimeFiles) {
+        $source = Join-Path $FunctionAppDirectory $file
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Required Function runtime file is missing: $file"
+        }
+        Copy-Item -LiteralPath $source -Destination $packageSource -ErrorAction Stop
     }
 
-    Get-ChildItem -Path $packageSource -Recurse -Directory -Force | Where-Object {
-        $_.Name -in @('__pycache__', '.pytest_cache')
-    } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-    tar -a -c -f $zipPath -C $packageSource .
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create portable Function App deployment package."
-    }
+    Compress-Archive -Path (Join-Path $packageSource '*') -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
     return @{
         PackageRoot = $packageRoot
         ZipPath = $zipPath
@@ -807,49 +834,24 @@ function Ensure-StoragePublicNetworkAccess {
         [string]$StorageAccountName,
 
         [Parameter(Mandatory=$true)]
-        [string]$ResourceGroupName,
-
-        [int]$MaxAttempts = 6
+        [string]$ResourceGroupName
     )
 
-    Write-Host "Ensuring storage account public network access is enabled before Function publish..." -ForegroundColor Yellow
-    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-        az storage account update `
-            --name $StorageAccountName `
-            --resource-group $ResourceGroupName `
-            --public-network-access Enabled `
-            --default-action Allow `
-            --bypass AzureServices `
-            --only-show-errors `
-            --output none
-
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "Storage network update command failed ($attempt/$MaxAttempts)." -ForegroundColor Yellow
-        }
-
-        $networkStateJson = az storage account show `
-            --name $StorageAccountName `
-            --resource-group $ResourceGroupName `
-            --query "{publicNetworkAccess:publicNetworkAccess, defaultAction:networkRuleSet.defaultAction, bypass:networkRuleSet.bypass}" `
-            -o json `
-            --only-show-errors
-
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($networkStateJson)) {
-            $networkState = $networkStateJson | ConvertFrom-Json
-            if ($networkState.publicNetworkAccess -eq 'Enabled' -and $networkState.defaultAction -eq 'Allow') {
-                Write-Host "Storage public network access is enabled." -ForegroundColor Green
-                return
-            }
-
-            Write-Host "Storage network state is publicNetworkAccess=$($networkState.publicNetworkAccess), defaultAction=$($networkState.defaultAction); retrying ($attempt/$MaxAttempts)..." -ForegroundColor Yellow
-        }
-
-        if ($attempt -lt $MaxAttempts) {
-            Start-Sleep -Seconds 10
-        }
+    Write-Host "Checking the public-endpoint deployment's storage connectivity requirement..." -ForegroundColor Yellow
+    $networkStateJson = az storage account show `
+        --name $StorageAccountName `
+        --resource-group $ResourceGroupName `
+        --query "{publicNetworkAccess:publicNetworkAccess, defaultAction:networkRuleSet.defaultAction}" `
+        -o json `
+        --only-show-errors
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($networkStateJson)) {
+        throw "Could not verify storage network configuration for '$StorageAccountName'."
     }
-
-    throw "Storage account '$StorageAccountName' did not keep public network access enabled after $MaxAttempts attempts."
+    $networkState = $networkStateJson | ConvertFrom-Json -ErrorAction Stop
+    if ($networkState.publicNetworkAccess -ne 'Enabled' -or $networkState.defaultAction -ne 'Allow') {
+        throw "Storage '$StorageAccountName' is network-restricted. This deployment profile has no private storage path. Configure approved private networking before publishing; the script will not reopen storage or override policy."
+    }
+    Write-Host "Storage connectivity prerequisite confirmed; network settings were not modified." -ForegroundColor Green
 }
 
 function Wait-ForFlexAppSettingsRemoval {
@@ -1049,6 +1051,9 @@ function Invoke-InfrastructureDeployment {
         --parameters location=$Location `
         --parameters gptCapacity=$GptCapacity `
         --parameters embeddingCapacity=$EmbeddingCapacity `
+        --parameters preferredAgentModelDeploymentName=$AgentModelName agentModelName=$AgentModelName agentModelVersion=$AgentModelVersion agentModelSku=$AgentModelSku `
+        --parameters enableMethodologySearch=$($EnableMethodologySearch.IsPresent.ToString().ToLowerInvariant()) `
+        --parameters enableScheduledAnalysis=$($EnableScheduledAnalysis.IsPresent.ToString().ToLowerInvariant()) `
         --parameters regulationsGovApiKey=$RegulationsGovApiKey `
         --parameters documentId=$DocumentId `
         --parameters batchSize=$BatchSize `
@@ -1126,6 +1131,9 @@ function Test-InfrastructureDeployment {
         --parameters location=$Location `
         --parameters gptCapacity=$GptCapacity `
         --parameters embeddingCapacity=$EmbeddingCapacity `
+        --parameters preferredAgentModelDeploymentName=$AgentModelName agentModelName=$AgentModelName agentModelVersion=$AgentModelVersion agentModelSku=$AgentModelSku `
+        --parameters enableMethodologySearch=$($EnableMethodologySearch.IsPresent.ToString().ToLowerInvariant()) `
+        --parameters enableScheduledAnalysis=$($EnableScheduledAnalysis.IsPresent.ToString().ToLowerInvariant()) `
         --parameters regulationsGovApiKey=$RegulationsGovApiKey `
         --parameters documentId=$DocumentId `
         --parameters batchSize=$BatchSize `
@@ -1364,7 +1372,7 @@ if ([string]::IsNullOrWhiteSpace($functionAppName)) {
     $foundryResourceEndpoint = if ($aiFoundryName) { "https://$aiFoundryName.services.ai.azure.com/" } else { '' }
     $documentIntelligenceEndpoint = if ($documentIntelligenceName) { "https://$documentIntelligenceName.cognitiveservices.azure.com/" } else { '' }
     $searchServiceEndpoint = if ($searchServiceName) { "https://$searchServiceName.search.windows.net" } else { '' }
-    $modelDeployment = 'gpt-4o'
+    $modelDeployment = $AgentModelName
     $embeddingModelDeployment = 'text-embedding-3-large'
 } else {
     $functionAppUrl = $result.properties.outputs.functionAppUrl.value
@@ -1405,25 +1413,17 @@ Write-Host "AI Search Endpoint:       $searchServiceEndpoint" -ForegroundColor W
 Write-Host "Embedding Model:          $embeddingModelDeployment" -ForegroundColor White
 Write-Host ""
 
-$preferredModelDeploymentAvailable = Add-PreferredFoundryDeployment `
-    -ResourceGroupName $ResourceGroupName `
-    -AccountName $aiFoundryName `
-    -DeploymentName 'gpt-5.4' `
-    -ModelName 'gpt-5.4' `
-    -ModelVersion '2026-03-05' `
-    -SkuName 'GlobalStandard' `
-    -Capacity $GptCapacity
-
-if ($preferredModelDeploymentAvailable) {
-    $modelDeployment = 'gpt-5.4'
-    Write-Host "Preferred GPT-5.4 Model:  available" -ForegroundColor White
-} else {
-    Write-Host "Preferred GPT-5.4 Model:  unavailable; using gpt-4o fallback" -ForegroundColor Yellow
+$deployedModelJson = az cognitiveservices account deployment show --resource-group $ResourceGroupName --name $aiFoundryName --deployment-name $AgentModelName --query properties.model --output json
+if ($LASTEXITCODE -ne 0) { throw "Required model deployment '$AgentModelName' is unavailable. No fallback will be used." }
+$deployedModel = $deployedModelJson | ConvertFrom-Json
+if ($deployedModel.name -ne $AgentModelName -or $deployedModel.version -ne $AgentModelVersion) {
+    throw "The published model does not match requested $AgentModelName version $AgentModelVersion."
 }
+$modelDeployment = $AgentModelName
 Write-Host "Default Agent Model:      $modelDeployment" -ForegroundColor White
 Write-Host ""
 
-$allowedModelDeployments = (@('gpt-4o', $modelDeployment) |
+$allowedModelDeployments = (@($modelDeployment) |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     Select-Object -Unique) -join ','
 
@@ -1627,7 +1627,7 @@ Invoke-AgentCreationWorkflow `
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "All done! Your app is fully deployed." -ForegroundColor Cyan
-Write-Host "The function runs daily at 3AM EST (8AM UTC)." -ForegroundColor Cyan
+Write-Host "Daily AI timer enabled: $($EnableScheduledAnalysis.IsPresent). When enabled, it runs at 08:00 UTC." -ForegroundColor Cyan
 Write-Host "Monitor it at: https://portal.azure.com" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 exit 0

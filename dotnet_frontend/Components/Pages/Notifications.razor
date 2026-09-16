@@ -1,0 +1,60 @@
+@page "/notifications"
+@rendermode InteractiveServer
+@inject IWorkspaceRepository Workspace
+@inject DocketMonitorService Monitor
+@inject ILogger<Notifications> Logger
+
+<PageTitle>Notifications</PageTitle>
+<h1>Notifications</h1>
+<p>Persistent, shared docket changes and deadline reminders. Marking an item read affects the shared inbox, not a private user account.</p>
+<button class="btn btn-outline-primary mb-3" @onclick="Refresh" disabled="@_busy">Refresh inbox</button>
+@if (_error is not null) { <div class="alert alert-danger" role="alert">@_error</div> }
+@if (_items.Count == 0) { <p>No notifications yet. <a href="watchlists">Add a watch</a> and check its docket.</p> }
+@foreach (var item in _items.OrderByDescending(i => WorkspaceJson.Read<DocketNotification>(i).CreatedAt))
+{
+    var note = WorkspaceJson.Read<DocketNotification>(item);
+    <article class="surface-card mb-3">
+        <h2 class="h5">@(note.ReadAt.HasValue ? "" : "Unread: ")@note.Title</h2>
+        <p class="small text-muted">@note.CreatedAt.ToString("u") &middot; @note.DocketId &middot; @note.Kind</p>
+        <p>@note.Body</p>
+        @if (note.CommentIds.Count > 0)
+        {
+            <details><summary>Submission IDs (@note.CommentIds.Count listed)</summary>
+                <ul>@foreach (var id in note.CommentIds) { <li><a href="@($"comments/{Uri.EscapeDataString(id)}")">@id</a></li> }</ul>
+            </details>
+        }
+        @if (note.RunId is { } run) { <a href="@($"analysis?runId={run:D}")">Open saved analysis</a> }
+        @if (!note.ReadAt.HasValue) { <button class="btn btn-sm btn-outline-primary mt-2" @onclick="() => MarkRead(item)" disabled="@_busy">Mark read</button> }
+    </article>
+}
+@if (_token is not null) { <button class="btn btn-outline-primary" @onclick="More" disabled="@_busy">Load more notifications</button> }
+
+@code {
+    private List<WorkspaceItem> _items = new();
+    private string? _token;
+    private string? _error;
+    private bool _busy;
+    protected override Task OnInitializedAsync() => Refresh();
+    private Task Refresh() => Execute(async () => { _items.Clear(); _token = null; await Load(); });
+    private Task More() => Execute(Load);
+    private async Task Load()
+    {
+        var page = await Monitor.ListNotificationsAsync(_token);
+        _items.AddRange(page.Items.Where(i => _items.All(existing => existing.Id != i.Id)));
+        _token = page.ContinuationToken;
+    }
+    private Task MarkRead(WorkspaceItem item) => Execute(async () =>
+    {
+        var note = WorkspaceJson.Read<DocketNotification>(item);
+        note.ReadAt = DateTimeOffset.UtcNow;
+        var saved = await Workspace.SaveAsync(DocketMonitorService.NotificationKind, item.Id, WorkspaceJson.Write(note), item.Version);
+        _items[_items.IndexOf(item)] = saved;
+    });
+    private async Task Execute(Func<Task> action)
+    {
+        _busy = true; _error = null;
+        try { await action(); }
+        catch (Exception ex) when (DocketMonitorService.ExpectedFailure(ex)) { Logger.LogWarning(ex, "Inbox action failed"); _error = ex.Message; }
+        finally { _busy = false; }
+    }
+}

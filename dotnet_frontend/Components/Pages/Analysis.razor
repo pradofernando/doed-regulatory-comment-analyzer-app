@@ -6,6 +6,7 @@
 @inject ApiSettingsStore SettingsStore
 @inject IFollowUpChatService FollowUpChat
 @inject IAnalysisRepository Repo
+@inject ReviewService Reviews
 @inject AnalysisJobManager Jobs
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
@@ -19,11 +20,19 @@
     <span class="section-eyebrow">AI insights</span>
     <h1 class="page-header__title">Regulatory Comment Analysis</h1>
     <p class="page-header__meta">
-        Runs the same two Foundry agents the daily Azure Function uses — first to categorize every comment,
-        then to group them into themes and synthesize a collective analysis.
+        Categorizes comments, groups policy concerns, and optionally validates the result.
+        Verify sources and apply human corrections before using a report to support a decision.
     </p>
 </header>
 
+@if (_workspaceLoading)
+{
+    <p role="status">Loading the saved analysis and latest review revisions...</p>
+}
+@if (_error is not null && !Store.HasInput && Store.LastRun is null)
+{
+    <div class="alert alert-danger" role="alert">@_error</div>
+}
 @if (!Store.HasInput && Store.LastRun is null)
 {
     <div class="alert alert-light border">
@@ -51,7 +60,7 @@ else
                 }
                 <div><span class="meta-label">Document</span><span class="meta-value"><code>@Store.DocumentId</code></span></div>
                 <div><span class="meta-label">Comments</span><span class="meta-value">@(Store.HasInput ? Store.Comments.Count : (Store.LastRun?.TotalComments ?? 0))</span></div>
-                <div><span class="meta-label">Batch size</span><span class="meta-value">@SettingsStore.Current.BatchSize</span></div>
+                <div><span class="meta-label">Batch size</span><span class="meta-value">@(Store.LastRun?.BatchSize ?? SettingsStore.Current.BatchSize)</span></div>
             </div>
             @if (Store.SelectedCount > 0)
             {
@@ -133,6 +142,17 @@ else
         && HasField(cat, "primary_topic", "topic", "category", "sentiment", "overall_sentiment", "commenter_type", "type"));
     var usesMixedCategorizationSchemas = usesCurrentCategorizationSchema && usesLegacyCategorizationSchema;
 
+    <CoverageSummary Run="run" />
+    @if (_workspace is { } loadedWorkspace)
+    {
+        <div class="alert alert-light border mt-3">
+            <strong>@(loadedWorkspace.State.Revisions.Count > 0 ? "Current reviewed analysis" : "Original AI analysis")</strong>
+            &middot; @loadedWorkspace.State.Revisions.Count saved comment revision(s).
+            <a href="@($"analysis?runId={Store.LoadedRunId:D}#workbench")" class="ms-2">Review and search</a>
+            <a href="@($"compare?after={Store.LoadedRunId:D}")" class="ms-2">Compare with another run</a>
+            <button class="btn btn-sm btn-link" @onclick="RefreshWorkspace">Reload latest revisions</button>
+        </div>
+    }
     <div class="d-flex justify-content-between align-items-center mt-4 mb-2 flex-wrap gap-2">
         <h2 class="section-title">Collective analysis</h2>
         <div class="d-flex gap-2 flex-wrap">
@@ -167,7 +187,7 @@ else
         <section class="surface-card summary-card">
             <div class="summary-stat">
                 <div class="summary-stat__value">@run.TotalComments</div>
-                <div class="summary-stat__label">Comments analyzed</div>
+                <div class="summary-stat__label">Submissions in this run</div>
             </div>
             <div class="summary-stat">
                 <div class="summary-stat__value">@g.ThemeGroups.Count</div>
@@ -240,9 +260,19 @@ else
                             <div class="theme-card__args">
                                 <div class="theme-card__args-label">Key arguments</div>
                                 <ul>
-                                    @foreach (var arg in t.CommonArguments.Take(5))
+                                    @foreach (var arg in t.CommonArguments)
                                     {
-                                        <li>@arg</li>
+                                        <li>
+                                            @if (Store.LoadedRunId is { } savedId)
+                                            {
+                                                <a href="@($"evidence/{savedId:D}?finding={Uri.EscapeDataString(arg)}")">@arg</a>
+                                                @if (!t.Evidence.Any(e => e.Finding == arg))
+                                                {
+                                                    <small class="text-muted"> (no verified quotation linked)</small>
+                                                }
+                                            }
+                                            else { @arg }
+                                        </li>
                                     }
                                 </ul>
                             </div>
@@ -339,7 +369,7 @@ else
         <section class="surface-card chat-panel">
             @if (string.IsNullOrWhiteSpace(run.FollowUpThreadId))
             {
-                <p class="mb-2">Start a chat to ask follow-up questions about this analysis. The agent gets the full collective analysis + per-comment categorizations as context.</p>
+                <p class="mb-2">Ask about the current analysis and reviewed classifications. Answers can link to captured source passages; unavailable evidence must be acknowledged.</p>
                 <button class="btn btn-primary" @onclick="StartChat" disabled="@_chatStarting">
                     @if (_chatStarting) { <span class="spinner-border spinner-border-sm me-2"></span> }
                     Start chat
@@ -353,7 +383,7 @@ else
                     {
                         <div class="chat-turn chat-turn--@turn.Role">
                             <div class="chat-turn__role">@(turn.Role == "user" ? "You" : "Agent") <span class="chat-turn__time">@turn.At.ToLocalTime():HH:mm</span></div>
-                            <div class="chat-turn__body">@turn.Text</div>
+                            <div class="chat-turn__body"><CitedText Run="run" Text="@turn.Text" /></div>
                         </div>
                     }
                     @if (_chatAsking)
@@ -367,6 +397,7 @@ else
                         <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => SendChat(s)" disabled="@_chatAsking">@s</button>
                     }
                 </div>
+                <p class="small text-muted">Source links open saved passages. A citation does not by itself verify the interpretation. Earlier chat messages may predate review corrections.</p>
                 <form @onsubmit="SendCurrentChat" @onsubmit:preventDefault>
                     <div class="input-group">
                         <input class="form-control" placeholder="Ask a question about this analysis…"
@@ -428,6 +459,11 @@ else
             </table>
         </div>
     </details>
+}
+
+@if (Store.LastRun is { Succeeded: true } && _workspace is { } activeWorkspace)
+{
+    <AnalystWorkbench Workspace="activeWorkspace" WorkspaceChanged="OnWorkspaceChanged" />
 }
 
 <style>
@@ -518,6 +554,11 @@ else
 </style>
 
 @code {
+    [SupplyParameterFromQuery(Name = "runId")] public Guid? RunId { get; set; }
+    private AnalysisWorkspace? _workspace;
+    private Guid? _workspaceRunId;
+    private bool _workspaceLoading;
+    private int _loadGeneration;
     private bool _isRunning;
     private AnalysisProgress? _progress;
     private string? _error;
@@ -560,6 +601,71 @@ else
         }
     }
 
+    protected override async Task OnParametersSetAsync()
+    {
+        var id = RunId ?? Store.LoadedRunId;
+        if (id is { } savedId && savedId != _workspaceRunId)
+            await LoadWorkspace(savedId, RunId.HasValue);
+    }
+
+    private async Task LoadWorkspace(Guid id, bool clearInputs = false)
+    {
+        var generation = ++_loadGeneration;
+        _workspaceLoading = true;
+        _error = null;
+        try
+        {
+            var workspace = await Reviews.OpenAsync(id);
+            if (generation != _loadGeneration) return;
+            workspace.Original.PersistedId = id;
+            workspace.Effective.PersistedId = id;
+            _workspace = workspace;
+            _workspaceRunId = id;
+            Store.LastRun = workspace.Effective;
+            Store.LoadedRunId = id;
+            Store.DocumentId = workspace.Effective.DocumentId;
+            if (clearInputs)
+            {
+                Store.Comments = Array.Empty<CommentResource>();
+                Store.InputMetadata = null;
+                Store.ClearSelection();
+                Store.CurrentJobId = null;
+                _currentJob = null;
+                _poll?.Dispose();
+                _poll = null;
+                _isRunning = false;
+                Store.IsRunning = false;
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException or HttpRequestException
+            or Microsoft.Azure.Cosmos.CosmosException or Azure.RequestFailedException
+            or System.Data.Common.DbException or System.Text.Json.JsonException)
+        {
+            Logger.LogWarning(ex, "Failed to load the analyst workspace for {RunId}", id);
+            _error = ex.Message;
+        }
+        finally { if (generation == _loadGeneration) _workspaceLoading = false; }
+    }
+
+    private Task OnWorkspaceChanged(AnalysisWorkspace workspace)
+    {
+        _workspace = workspace;
+        workspace.Effective.PersistedId = Store.LoadedRunId;
+        Store.LastRun = workspace.Effective;
+        return Task.CompletedTask;
+    }
+
+    private async Task RefreshWorkspace()
+    {
+        if (Store.LoadedRunId is { } id) await LoadWorkspace(id);
+    }
+
+    private async Task<bool> RefreshForAction()
+    {
+        await RefreshWorkspace();
+        return _error is null && Store.LastRun is not null;
+    }
+
     /// <summary>Human-friendly estimate of time left in the current phase, or null when not meaningful.</summary>
     private string? EtaText
     {
@@ -576,7 +682,13 @@ else
     {
         if (!Store.HasInput || _isRunning) return;
         _error = null;
-        var job = Jobs.Start(Store.DocumentId ?? string.Empty, Store.Comments, SettingsStore.Current);
+        _workspace = null;
+        _workspaceRunId = null;
+        _loadGeneration++;
+        _workspaceLoading = false;
+        Store.LastRun = null;
+        Store.LoadedRunId = null;
+        var job = Jobs.Start(Store.DocumentId ?? string.Empty, Store.Comments, SettingsStore.Current, Store.InputMetadata);
         AttachToJob(job);
     }
 
@@ -610,7 +722,7 @@ else
             TimeSpan.FromMilliseconds(800));
     }
 
-    private void OnPollTick()
+    private async Task OnPollTick()
     {
         if (_currentJob is null) return;
 
@@ -619,11 +731,13 @@ else
 
         if (!_currentJob.IsActive)
         {
+            _poll?.Dispose();
+            _poll = null;
             _isRunning = false;
             Store.IsRunning = false;
             ApplyFinishedJob(_currentJob);
-            _poll?.Dispose();
-            _poll = null;
+            if (_currentJob.SavedRunId is { } savedId && _currentJob.State == AnalysisJobState.Completed)
+                await LoadWorkspace(savedId);
         }
 
         StateHasChanged();
@@ -663,14 +777,15 @@ else
     {
         var k = (key ?? "").ToLowerInvariant();
         if (k.Contains("support") || k.Contains("favor") || k.Contains("for")) return "support";
-        if (k.Contains("oppose") || k.Contains("against")) return "oppose";
+        if (k.Contains("oppos") || k.Contains("against")) return "oppose";
         if (k.Contains("neutral") || k.Contains("unclear")) return "neutral";
         if (k.Contains("mixed")) return "mixed";
         return "other";
     }
 
-    private static string CommentHref(string commentId) =>
-        $"comments/{Uri.EscapeDataString(commentId)}";
+    private string CommentHref(string commentId) => Store.LoadedRunId is { } id
+        ? $"evidence/{id:D}?commentId={Uri.EscapeDataString(commentId)}"
+        : $"comments/{Uri.EscapeDataString(commentId)}";
 
     private static bool HasField(CategorizationResult cat, params string[] keys) =>
         keys.Any(key => cat.Parsed.TryGetValue(key, out var value) && value is not null);
@@ -693,6 +808,7 @@ else
 
     private async Task DownloadReportJson()
     {
+        if (!await RefreshForAction()) return;
         if (Store.LastRun is null) return;
         var json = CommentExporter.ToJson(Store.LastRun);
         await JS.InvokeVoidAsync("downloadFile",
@@ -702,8 +818,9 @@ else
 
     private async Task DownloadReportText()
     {
+        if (!await RefreshForAction()) return;
         if (Store.LastRun is null) return;
-        var text = BuildTextReport(Store.LastRun);
+        var text = BuildTextReport(Store.LastRun, _workspace?.State);
         await JS.InvokeVoidAsync("downloadFile",
             $"analysis_{Store.DocumentId}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.txt",
             "text/plain;charset=utf-8", text);
@@ -711,8 +828,9 @@ else
 
     private async Task DownloadReportWord()
     {
+        if (!await RefreshForAction()) return;
         if (Store.LastRun is null) return;
-        var bytes = CollectiveAnalysisExporter.BuildWord(Store.LastRun);
+        var bytes = CollectiveAnalysisExporter.BuildWord(Store.LastRun, _workspace?.State);
         await JS.InvokeVoidAsync("downloadBinaryFile",
             $"collective-analysis_{Store.DocumentId}_{DateTime.UtcNow:yyyyMMdd-HHmm}.docx",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -721,8 +839,9 @@ else
 
     private async Task DownloadReportExcel()
     {
+        if (!await RefreshForAction()) return;
         if (Store.LastRun is null) return;
-        var bytes = CollectiveAnalysisExporter.BuildExcel(Store.LastRun);
+        var bytes = CollectiveAnalysisExporter.BuildExcel(Store.LastRun, _workspace?.State);
         await JS.InvokeVoidAsync("downloadBinaryFile",
             $"collective-analysis_{Store.DocumentId}_{DateTime.UtcNow:yyyyMMdd-HHmm}.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -731,20 +850,25 @@ else
 
     private async Task StartChat()
     {
-        if (Store.LastRun is null) return;
+        if (_chatStarting || _chatAsking || Store.LastRun is null) return;
         _chatStarting = true;
         _chatError = null;
         try
         {
-            await FollowUpChat.StartFollowUpThreadAsync(Store.LastRun, SettingsStore.Current, default);
-            if (Store.LoadedRunId is Guid id && !string.IsNullOrEmpty(Store.LastRun.FollowUpThreadId))
+            if (!await RefreshForAction() || Store.LastRun is null) return;
+            var chatRun = Store.LastRun;
+            var chatRunId = Store.LoadedRunId;
+            await FollowUpChat.StartFollowUpThreadAsync(chatRun, WorkspaceJson.Clone(SettingsStore.Current), default);
+            if (chatRunId is Guid id && !string.IsNullOrEmpty(chatRun.FollowUpThreadId))
             {
-                try { await Repo.SetFollowUpThreadAsync(id, Store.LastRun.FollowUpThreadId!); }
-                catch (Exception ex) { Logger.LogWarning(ex, "Failed to persist follow-up thread ID."); }
+                await Repo.SetFollowUpThreadAsync(id, chatRun.FollowUpThreadId);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException or HttpRequestException
+            or Microsoft.Azure.Cosmos.CosmosException or Azure.RequestFailedException or Azure.Identity.AuthenticationFailedException
+            or OperationCanceledException or System.Data.Common.DbException or System.Text.Json.JsonException)
         {
+            Logger.LogWarning(ex, "Follow-up chat could not be started or saved");
             _chatError = ex.Message;
         }
         finally
@@ -763,26 +887,33 @@ else
 
     private async Task SendChat(string question)
     {
-        if (Store.LastRun is null || _chatAsking || string.IsNullOrWhiteSpace(question)) return;
+        if (Store.LastRun is null || _chatAsking || _chatStarting || string.IsNullOrWhiteSpace(question)) return;
         _chatAsking = true;
         _chatError = null;
-        var beforeCount = Store.LastRun.FollowUpHistory.Count;
         try
         {
-            await FollowUpChat.AskFollowUpAsync(Store.LastRun, question, SettingsStore.Current, default);
-            if (Store.LoadedRunId is Guid id)
+            if (!await RefreshForAction() || Store.LastRun is null) return;
+            var chatRun = Store.LastRun;
+            var chatRunId = Store.LoadedRunId;
+            var beforeCount = chatRun.FollowUpHistory.Count;
+            await FollowUpChat.AskFollowUpAsync(chatRun, question, WorkspaceJson.Clone(SettingsStore.Current), default);
+            if (chatRunId is Guid id)
             {
                 // FoundryAnalysisService appends exactly two turns (user + agent); persist both.
-                var added = Store.LastRun.FollowUpHistory.Skip(beforeCount).ToList();
+                var added = chatRun.FollowUpHistory.Skip(beforeCount).ToList();
                 foreach (var t in added)
                 {
-                    try { await Repo.AppendFollowUpAsync(id, t); }
-                    catch (Exception ex) { Logger.LogWarning(ex, "Failed to persist follow-up turn."); }
+                    await Repo.AppendFollowUpAsync(id, t);
                 }
+                if (!string.IsNullOrWhiteSpace(chatRun.FollowUpThreadId))
+                    await Repo.SetFollowUpThreadAsync(id, chatRun.FollowUpThreadId);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException or HttpRequestException
+            or Microsoft.Azure.Cosmos.CosmosException or Azure.RequestFailedException or Azure.Identity.AuthenticationFailedException
+            or OperationCanceledException or System.Data.Common.DbException or System.Text.Json.JsonException)
         {
+            Logger.LogWarning(ex, "Follow-up reply could not be obtained or saved");
             _chatError = ex.Message;
         }
         finally
@@ -791,7 +922,7 @@ else
         }
     }
 
-    private static string BuildTextReport(AnalysisRun run)
+    private static string BuildTextReport(AnalysisRun run, RunReviewState? reviewState = null)
     {
         var sb = new StringBuilder();
         var sep = new string('=', 60);
@@ -802,8 +933,9 @@ else
         sb.AppendLine($"Document:           {run.DocumentId}");
         sb.AppendLine($"Started:            {run.StartedAt:yyyy-MM-dd HH:mm:ss} UTC");
         sb.AppendLine($"Completed:          {run.CompletedAt:yyyy-MM-dd HH:mm:ss} UTC");
-        sb.AppendLine($"Comments analyzed:  {run.TotalComments}");
+        sb.AppendLine($"Submissions in run: {run.TotalComments}");
         sb.AppendLine($"Batch size:         {run.BatchSize}");
+        sb.AppendLine(AnalystReportExporter.ContextText(run, reviewState));
         sb.AppendLine();
 
         var g = run.Grouped;
@@ -831,11 +963,11 @@ else
                 if (t.StanceDistribution.Count > 0)
                     sb.AppendLine("   Stance:   " + string.Join(" | ", t.StanceDistribution.Select(kv => $"{kv.Key}: {kv.Value}")));
                 if (t.SubmissionNumbers.Count > 0)
-                    sb.AppendLine("   Subs:     " + string.Join(", ", t.SubmissionNumbers.Take(20).Select(n => $"#{n}")) + (t.SubmissionNumbers.Count > 20 ? ", ..." : ""));
+                    sb.AppendLine("   Subs:     " + string.Join(", ", t.SubmissionNumbers.Select(n => $"#{n}")));
                 if (t.CommonArguments.Count > 0)
                 {
                     sb.AppendLine("   Key arguments:");
-                    foreach (var arg in t.CommonArguments.Take(6)) sb.AppendLine($"     - {arg}");
+                    foreach (var arg in t.CommonArguments) sb.AppendLine($"     - {arg}");
                 }
                 sb.AppendLine();
                 i++;
@@ -860,6 +992,12 @@ else
             sb.AppendLine("RAW AGENT RESPONSE");
             sb.AppendLine(thin);
             sb.AppendLine(g.RawResponse);
+        }
+        sb.AppendLine(AnalystReportExporter.EvidenceText(run));
+        if (reviewState is not null)
+        {
+            sb.AppendLine("ISSUE RESPONSE MATRIX (DRAFT WORKING MATERIAL)");
+            sb.AppendLine(AnalystReportExporter.IssuesCsv(reviewState.Issues));
         }
         sb.AppendLine(sep);
         return sb.ToString();

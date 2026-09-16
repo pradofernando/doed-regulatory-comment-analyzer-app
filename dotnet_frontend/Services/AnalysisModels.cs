@@ -33,6 +33,14 @@ public class ThemeGroup
     [JsonPropertyName("submission_numbers")] public List<int> SubmissionNumbers { get; set; } = new();
     [JsonPropertyName("stance_distribution")] public Dictionary<string, int> StanceDistribution { get; set; } = new();
     [JsonPropertyName("common_arguments")] public List<string> CommonArguments { get; set; } = new();
+    [JsonPropertyName("evidence")] public List<FindingEvidence> Evidence { get; set; } = new();
+}
+
+public sealed class FindingEvidence
+{
+    [JsonPropertyName("finding"), Newtonsoft.Json.JsonProperty("finding")] public string Finding { get; set; } = string.Empty;
+    [JsonPropertyName("source_id"), Newtonsoft.Json.JsonProperty("source_id")] public string SourceId { get; set; } = string.Empty;
+    [JsonPropertyName("quote"), Newtonsoft.Json.JsonProperty("quote")] public string Quote { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -69,6 +77,8 @@ public class AnalysisRun
     public GroupedAnalysis Grouped { get; set; } = new();
     public bool Succeeded { get; set; }
     public string? ErrorMessage { get; set; }
+    public AnalysisProvenance? Provenance { get; set; }
+    public List<CommentSourceSnapshot> Sources { get; set; } = new();
 
     /// <summary>The actual comment objects analyzed (mirrors what FoundryAnalysisService received). Used by exporters and the chat-priming step.</summary>
     [JsonIgnore]

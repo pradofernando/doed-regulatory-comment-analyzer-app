@@ -29,6 +29,8 @@ public class StoredAnalysisRun
     public string RecommendationsJson { get; set; } = "[]";
 
     public string? FollowUpThreadId { get; set; }
+    public string SourcesJson { get; set; } = "[]";
+    public string? ProvenanceJson { get; set; }
 
     public List<StoredCategorization> Categorizations { get; set; } = new();
     public List<StoredThemeGroup> ThemeGroups { get; set; } = new();
@@ -45,6 +47,7 @@ public class StoredCategorization
     public int SubmissionNumber { get; set; }
 
     [MaxLength(128)] public string CommentId { get; set; } = string.Empty;
+    public string RowData { get; set; } = string.Empty;
 
     /// <summary>The raw text the agent returned (may be JSON or prose).</summary>
     public string RawResponse { get; set; } = string.Empty;
@@ -77,6 +80,7 @@ public class StoredThemeGroup
 
     /// <summary>JSON array of strings.</summary>
     public string CommonArgumentsJson { get; set; } = "[]";
+    public string EvidenceJson { get; set; } = "[]";
 }
 
 public class StoredFollowUpTurn
@@ -91,4 +95,12 @@ public class StoredFollowUpTurn
     [MaxLength(16)] public string Role { get; set; } = "user";
     public string Text { get; set; } = string.Empty;
     public DateTimeOffset At { get; set; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class StoredWorkspaceDocument
+{
+    [MaxLength(64)] public string Kind { get; set; } = string.Empty;
+    [MaxLength(256)] public string Id { get; set; } = string.Empty;
+    public string Json { get; set; } = "{}";
+    [ConcurrencyCheck, MaxLength(64)] public string Version { get; set; } = string.Empty;
 }

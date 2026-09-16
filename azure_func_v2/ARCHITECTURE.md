@@ -1,11 +1,17 @@
 # Azure Function Architecture Overview
 
+The diagrams below illustrate the original batch workflow. Current execution is
+queue-backed and supports manual requests; its optional timer is disabled by
+default. The four prompt agents use the explicitly selected model (currently
+GPT-5.5 `2026-04-24`, GlobalStandard). Source snapshots, reviews, watchlists and
+comparisons are described in the [Analyst guide](../docs/ANALYST_GUIDE.md).
+
 ## System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         AZURE FUNCTION                               │
-│                   (Runs Daily at 3AM EST)                           │
+│                   (Optional 08:00 UTC timer)                        │
 └─────────────────────────────────────────────────────────────────────┘
                                  │
                                  │ Timer Trigger
@@ -223,7 +229,7 @@ Grouped Analysis JSON ──────> Azure Blob Storage
 ## Timing & Schedule
 
 ```
-Daily Schedule (EST)
+Illustrative schedule when the timer is explicitly enabled (EST)
 
 00:00 (Midnight) ────────────────────────────
         │
@@ -247,7 +253,8 @@ Daily Schedule (EST)
 ```
 
 **Total Processing Time**: ~10-20 minutes
-**Daily Run Time**: 3:00 AM EST (8:00 AM UTC)
+**Daily run time when enabled**: 08:00 UTC (03:00 EST / 04:00 EDT).
+The duration above is illustrative, not a performance guarantee.
 
 ## File Outputs
 
@@ -382,7 +389,7 @@ Managed Identity Benefits:
 ✅ First run completes without errors
 ✅ All 4 phases execute in sequence
 ✅ Output files appear in blob storage
-✅ Daily schedule triggers at 3AM EST
+✅ Optional schedule triggers at 08:00 UTC only when enabled
 ✅ Costs remain within budget
 ✅ Monitoring and alerts configured
 ```

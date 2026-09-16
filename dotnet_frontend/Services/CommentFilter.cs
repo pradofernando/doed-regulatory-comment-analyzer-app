@@ -20,7 +20,7 @@ public static class CommentFilter
 {
     /// <summary>
     /// Returns the comments matching <paramref name="filterText"/> (case-insensitive substring
-    /// match against comment ID, commenter name, organization and title), ordered by
+    /// match against comment ID, commenter name, organization, title and available body), ordered by
     /// <paramref name="sortColumn"/>.
     /// </summary>
     public static IReadOnlyList<CommentResource> Apply(
@@ -61,7 +61,8 @@ public static class CommentFilter
         return Contains(comment.Id, term)
             || Contains(CommenterName(a), term)
             || Contains(a.Organization, term)
-            || Contains(a.Title, term);
+            || Contains(a.Title, term)
+            || Contains(a.Comment, term);
     }
 
     /// <summary>Combined first + last name, trimmed.</summary>

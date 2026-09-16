@@ -113,6 +113,7 @@ else
                             </td>
                             <td><span class="small text-muted">@(string.IsNullOrWhiteSpace(r.OverallSentiment) ? "—" : r.OverallSentiment)</span></td>
                             <td class="text-end text-nowrap" @onclick:stopPropagation>
+                                <a class="btn btn-sm btn-outline-primary me-1" href="@($"compare?after={r.Id:D}")">Compare</a>
                                 <button class="btn btn-sm btn-primary me-1"
                                         @onclick="() => OpenRun(r.Id)"
                                         disabled="@(_busyId == r.Id)">
@@ -220,7 +221,7 @@ else
         try
         {
             var run = await Repo.LoadRunAsync(id);
-            if (run is null) return;
+            if (run is null) throw new InvalidOperationException("This saved run no longer exists. Refresh the Library.");
 
             Store.DocumentId = run.DocumentId;
             Store.LastRun = run;
@@ -231,8 +232,14 @@ else
             // Loaded runs don't have the original CommentResource list available, so
             // clear staged inputs to avoid the Analysis page thinking a re-run is queued.
             Store.Comments = Array.Empty<CommentResource>();
+            Store.InputMetadata = null;
             Store.ClearSelection();
-            Navigation.NavigateTo("/analysis");
+            Navigation.NavigateTo($"/analysis?runId={id:D}");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or IOException
+            or Microsoft.Azure.Cosmos.CosmosException or Azure.RequestFailedException or System.Data.Common.DbException)
+        {
+            _error = ex.Message;
         }
         finally
         {

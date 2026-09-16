@@ -1,0 +1,58 @@
+@{
+    var coverage = AnalysisCoverage.From(Run);
+}
+<section class="surface-card mt-3" aria-labelledby="coverage-title">
+    <h2 id="coverage-title" class="h5">Coverage and quality</h2>
+    <div class="row g-3">
+        <div class="col"><strong>@AnalysisCoverage.Display(coverage.Available)</strong><div class="small">Available in API results</div></div>
+        <div class="col"><strong>@AnalysisCoverage.Display(coverage.Fetched)</strong><div class="small">Fetched</div></div>
+        <div class="col"><strong>@coverage.Selected</strong><div class="small">Selected for this run</div></div>
+        <div class="col"><strong>@AnalysisCoverage.Display(coverage.WithUsableSource)</strong><div class="small">Categorized with usable text</div></div>
+        <div class="col"><strong>@AnalysisCoverage.Display(coverage.Unreadable)</strong><div class="small">Unreadable</div></div>
+        <div class="col"><strong>@AnalysisCoverage.Display(coverage.Partial)</strong><div class="small">Partial source capture</div></div>
+    </div>
+    <p class="mt-3 mb-1"><strong>Scope: @coverage.Scope.</strong> @Run.Provenance?.SelectionDescription</p>
+    <p class="small mb-2">@AnalysisCoverage.InterpretationNotice</p>
+    @if (coverage.Unreadable > 0)
+    {
+        <p class="small text-warning-emphasis">Unreadable submissions have no inferred policy position. Any neutral or procedural placeholders must not be interpreted as evidence of neutral public opinion.</p>
+    }
+    @if (coverage.Uncaptured > 0)
+    {
+        <div class="alert alert-warning small mb-2">
+            @coverage.Uncaptured submission(s) have no saved source snapshot. Older analyses remain readable, but missing
+            evidence cannot be reconstructed or treated as proof that the original comment was empty.
+        </div>
+    }
+    @if (Run.Provenance is { } provenance)
+    {
+        <details>
+            <summary>Analysis configuration and extraction warnings</summary>
+            <dl class="row small mt-2">
+                <dt class="col-sm-3">Captured (UTC)</dt><dd class="col-sm-9">@provenance.CapturedAt.ToUniversalTime().ToString("u")</dd>
+                <dt class="col-sm-3">Pipeline</dt><dd class="col-sm-9">@provenance.PipelineVersion</dd>
+                <dt class="col-sm-3">Configured model</dt><dd class="col-sm-9">@provenance.Model</dd>
+                <dt class="col-sm-3">Batch / validation</dt><dd class="col-sm-9">@provenance.BatchSize / @(provenance.RunValidation ? "enabled" : "disabled")</dd>
+            </dl>
+            <p class="small">Configured model/version values are recorded, not a live model inventory. A version of "latest" is not a reproducible version pin. Model-reported confidence is not a calibrated accuracy score.</p>
+            <ul class="small">
+                @foreach (var agent in provenance.AgentVersions)
+                {
+                    <li>@agent.Key: @agent.Value</li>
+                }
+                @foreach (var source in Run.Sources.Where(s => s.Warnings.Count > 0))
+                {
+                    <li><strong>@source.CommentId:</strong> @string.Join(" ", source.Warnings)</li>
+                }
+            </ul>
+        </details>
+    }
+    else
+    {
+        <p class="text-muted small mb-0">Configuration and extraction provenance were not recorded for this legacy run.</p>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public AnalysisRun Run { get; set; } = new();
+}

@@ -1,6 +1,8 @@
 # DoED Regulatory Comments Azure Function
 
-Automated Azure Function that runs daily at 3AM EST to fetch, process, and analyze public comments from Regulations.gov.
+Azure Function that processes queued public-comment analyses from Regulations.gov.
+Its optional daily trigger runs at 08:00 UTC (03:00 EST / 04:00 EDT) and is disabled
+by default in new deployments.
 
 ## Overview
 
@@ -17,6 +19,28 @@ Scheduled and manual requests use the same `analysis-requests` queue worker. The
 
 - `POST /api/analysis-runs` validates settings, creates a queued run, and returns `202 Accepted` with a `runId`.
 - `GET /api/analysis-runs/{runId}` returns `queued`, `running`, `succeeded`, or `failed` status.
+
+## Analyst workspace support
+
+New runs retain source passages, actual extraction page references when available,
+coverage, and analysis configuration. Categorization and grouping evidence is
+checked against captured text before being presented as verified quotations.
+Large source-bearing payloads use the same private gzip Blob format consumed by
+the frontend; older categorization-only payloads remain supported.
+
+The integrated deployment defines four prompt agents: Categorization, Grouping,
+optional Validation, and Follow-up Q&A. Their version-controlled instructions are
+read from [AGENT_PROMPTS.md](AGENT_PROMPTS.md) during deployment.
+Methodology retrieval is optional and must have an explicit connection and index;
+the no-retrieval mode must not claim to have searched.
+
+Human review, issue-response editing, saved views, comparisons, docket watchlists,
+and the persistent notifications inbox live in the .NET web app. Its watchlist
+monitor is separate from this Function's existing configured daily analysis.
+Automatic analysis of watchlist changes is an explicit opt-in.
+
+See the [Analyst guide](../docs/ANALYST_GUIDE.md) for a plain-language walkthrough,
+data flow, limitations, and implementation details.
 
 The queue worker atomically claims a run before execution, preventing duplicate queue deliveries from running concurrently. Categorization payloads above 512 KB are gzip-compressed into the private `analysis-run-payloads` container using the same format consumed by the frontend.
 
@@ -44,9 +68,21 @@ For a brand-new deployment into a new or empty resource group, the script genera
 
 The script handles everything:
 - Provisions all Azure resources via Bicep
-- Creates the Categorization, Grouping, and Validation agents in Foundry when the deployed endpoint is available
+- Creates all four prompt agents: Categorization, Grouping, Validation, and Follow-up Q&A
 - Updates the Function App with the Foundry project endpoint plus agent name/version/model settings
 - Publishes the Function App code
+
+The model is pinned to GPT-5.5 `2026-04-24`, GlobalStandard, unless explicitly
+overridden. `-AgentPythonExecutable` selects the interpreter used for publishing
+the definitions; the required Projects SDK is 2.4.0.
+Optional Search/embeddings require `-EnableMethodologySearch`. Actual retrieval
+also requires both `-MethodologySearchConnectionId` and `-MethodologySearchIndexName`.
+Provisioning a Search service alone does not load documents or attach an index.
+
+Inherited policy can disable Storage, Key Vault and Cosmos public endpoints even
+when ARM validation passes. This profile requires approved connectivity to those
+services; the script now fails rather than reopening policy-restricted storage.
+See the [full-stack readiness notes](../dotnet_frontend/DEPLOYMENT.md#current-full-stack-readiness).
 
 For the integrated frontend/Cosmos topology, use the root deployment script. It provisions or selects Cosmos, assigns both managed identities, creates payload storage, configures the Function endpoint/key on the server-side frontend, and enables Function-owned analysis. The Function-only script intentionally leaves manual analysis disabled unless Cosmos settings are supplied separately.
 
@@ -68,8 +104,9 @@ For full step-by-step instructions see the [root README deployment guide](../REA
 ## Schedule
 
 - **Trigger**: Timer Trigger (CRON: `0 0 8 * * *`)
-- **Schedule**: Daily at 3AM EST (8AM UTC)
-- **Execution**: Automatic, no manual intervention required
+- **Schedule when enabled**: Daily at 08:00 UTC (03:00 EST / 04:00 EDT)
+- **Execution**: Disabled by default; explicitly opt in with `-EnableScheduledAnalysis`.
+- **Watchlists**: Separate web-app monitoring, not this legacy fixed-docket timer.
 
 ## Infrastructure
 
@@ -120,7 +157,7 @@ All Azure resources are created by the Bicep template:
 
 All dependencies are listed in `requirements.txt`:
 - `azure-functions` - Azure Functions runtime
-- `semantic-kernel` - Azure AI Agent integration
+- `agent-framework-core`, `agent-framework-foundry`, `agent-framework-openai` - Microsoft Agent Framework integration (pinned to 1.2.2)
 - `azure-identity` - Authentication
 - `azure-storage-blob` - Blob storage
 - `requests` - HTTP requests
@@ -140,14 +177,18 @@ Configure these settings in Azure Portal → Function App → Configuration or i
 | `FOUNDRY_PROJECT_ENDPOINT` | Azure AI Foundry project endpoint | `https://your-resource.cognitiveservices.azure.com/api/projects/your-project` |
 | `CATEGORIZATION_AGENT_NAME` | Foundry agent name for categorization | `RegulatoryCommentCategorizationAgent` |
 | `CATEGORIZATION_AGENT_VERSION` | Version of the categorization agent | `1` |
-| `CATEGORIZATION_AGENT_MODEL` | Model deployment for the categorization agent | `gpt-5.4` |
+| `CATEGORIZATION_AGENT_MODEL` | Model deployment for the categorization agent | `gpt-5.5` |
 | `GROUPING_AGENT_NAME` | Foundry agent name for grouping | `RegulatoryCommentGroupingAgent` |
 | `GROUPING_AGENT_VERSION` | Version of the grouping agent | `1` |
-| `GROUPING_AGENT_MODEL` | Model deployment for the grouping agent | `gpt-5.4` |
+| `GROUPING_AGENT_MODEL` | Model deployment for the grouping agent | `gpt-5.5` |
 | `VALIDATION_AGENT_NAME` | Optional Foundry agent name for validation | `doed-comment-agent3` |
 | `VALIDATION_AGENT_VERSION` | Version of the validation agent | `1` |
-| `VALIDATION_AGENT_MODEL` | Model deployment for the validation agent | `gpt-5.4` |
-| `ALLOWED_MODEL_DEPLOYMENTS` | Comma-separated models accepted from manual analysis requests | `gpt-5.4,gpt-4o` |
+| `VALIDATION_AGENT_MODEL` | Model deployment for the validation agent | `gpt-5.5` |
+| `ALLOWED_MODEL_DEPLOYMENTS` | Explicit approved model deployments; the deployment does not add fallback models | `gpt-5.5` |
+| `FOLLOWUP_AGENT_NAME` | Follow-up question-answering agent | `RegulatoryCommentFollowUpAgent` |
+| `FOLLOWUP_AGENT_VERSION` | Published follow-up agent version | `1` |
+| `FOLLOWUP_AGENT_MODEL` | Follow-up model deployment | `gpt-5.5` |
+| `AzureWebJobs.regulatory_comments_daily.Disabled` | Disable the optional fixed-docket timer | `true` |
 | `BATCH_SIZE` | Number of comments per batch for grouping | `5` |
 | `MAX_COMMENTS` | Limit number of comments to process (empty = all) | `10` or empty |
 | `AZURE_STORAGE_ACCOUNT_NAME` | Storage account name for blob storage (uses managed identity) | `storeregulatory` |
@@ -166,14 +207,18 @@ Configure these settings in Azure Portal → Function App → Configuration or i
     "FOUNDRY_PROJECT_ENDPOINT": "https://your-resource.cognitiveservices.azure.com/api/projects/your-project",
     "CATEGORIZATION_AGENT_NAME": "your-categorization-agent-name",
     "CATEGORIZATION_AGENT_VERSION": "1",
-    "CATEGORIZATION_AGENT_MODEL": "gpt-5.4",
+    "CATEGORIZATION_AGENT_MODEL": "gpt-5.5",
     "GROUPING_AGENT_NAME": "your-grouping-agent-name",
     "GROUPING_AGENT_VERSION": "1",
-    "GROUPING_AGENT_MODEL": "gpt-5.4",
+    "GROUPING_AGENT_MODEL": "gpt-5.5",
     "VALIDATION_AGENT_NAME": "your-validation-agent-name",
     "VALIDATION_AGENT_VERSION": "1",
-    "VALIDATION_AGENT_MODEL": "gpt-5.4",
-    "ALLOWED_MODEL_DEPLOYMENTS": "gpt-5.4,gpt-4o",
+    "VALIDATION_AGENT_MODEL": "gpt-5.5",
+    "FOLLOWUP_AGENT_NAME": "RegulatoryCommentFollowUpAgent",
+    "FOLLOWUP_AGENT_VERSION": "1",
+    "FOLLOWUP_AGENT_MODEL": "gpt-5.5",
+    "ALLOWED_MODEL_DEPLOYMENTS": "gpt-5.5",
+    "AzureWebJobs.regulatory_comments_daily.Disabled": "true",
     "BATCH_SIZE": "5",
     "MAX_COMMENTS": "",
     "AZURE_STORAGE_ACCOUNT_NAME": "your_storage_account_name"
@@ -181,7 +226,9 @@ Configure these settings in Azure Portal → Function App → Configuration or i
 }
 ```
 
-The deployment script attempts to create or reuse `gpt-5.4` first. If that deployment is unavailable in the selected region or subscription, it configures the agents and Function App to use the Bicep-managed `gpt-4o` deployment instead.
+The deployment script verifies the requested model name and version after
+provisioning. If GPT-5.5 is unavailable or mismatched, it fails instead of
+switching the agents to another model.
 
 **Note:** Copy `local.settings.json.example` to `local.settings.json` and update with your actual values.
 

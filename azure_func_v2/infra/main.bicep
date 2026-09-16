@@ -55,18 +55,26 @@ param baseName string = 'doed-comments'
 ])
 param location string = 'eastus'  // <-- CHANGE THIS TO DEPLOY TO A DIFFERENT REGION
 
-@description('Default GPT-4o model deployment capacity in thousands of tokens per minute.')
+@description('Selected model deployment capacity in thousands of tokens per minute.')
 @minValue(1)
 @maxValue(100)
 param gptCapacity int = 10
 
-@description('Preferred model deployment for Foundry agents. The deployment script falls back to the Bicep-managed GPT-4o deployment when this model is unavailable.')
-param preferredAgentModelDeploymentName string = 'gpt-5.4'
+@description('Required model deployment for all four agents. Deployment fails rather than falling back to another model.')
+param preferredAgentModelDeploymentName string = 'gpt-5.5'
+
+param agentModelName string = 'gpt-5.5'
+param agentModelVersion string = '2026-04-24'
+@allowed(['GlobalStandard', 'DataZoneStandard', 'Standard'])
+param agentModelSku string = 'GlobalStandard'
 
 @description('text-embedding-3-large deployment capacity in thousands of tokens per minute.')
 @minValue(1)
 @maxValue(100)
 param embeddingCapacity int = 10
+
+@description('Provision optional methodology Search and embeddings. Leave disabled until a knowledge index is needed.')
+param enableMethodologySearch bool = false
 
 @description('The Regulations.gov API key. Get one free at https://open.gsa.gov/api/regulationsgov/')
 @secure()
@@ -79,6 +87,9 @@ param documentId string = 'ED-2025-SCC-0481-0001'
 @minValue(1)
 @maxValue(20)
 param batchSize int = 5
+
+@description('Enable the legacy daily AI analysis timer. Disabled by default to avoid unrequested model usage.')
+param enableScheduledAnalysis bool = false
 
 @description('Object ID of the signed-in deployer. Used to grant temporary data-plane access for agent creation automation.')
 param deployerPrincipalId string = ''
@@ -365,7 +376,7 @@ resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2023-10-01-p
 // Customer-owned Azure AI Search service used for agent knowledge retrieval.
 // ============================================================================
 #disable-next-line BCP334
-resource searchService 'Microsoft.Search/searchServices@2022-09-01' = {
+resource searchService 'Microsoft.Search/searchServices@2022-09-01' = if (enableMethodologySearch) {
   name: searchServiceName
   location: location
   tags: tags
@@ -433,27 +444,27 @@ resource aiProject 'Microsoft.CognitiveServices/accounts/projects@2025-06-01' = 
   properties: {}
 }
 
-// Deploy the default GPT-4o chat model used by Foundry agents
+// Deploy the explicitly selected model; never silently substitute another model.
 resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = {
   parent: aiFoundry
-  name: 'gpt-4o'
+  name: preferredAgentModelDeploymentName
 
   sku: {
-    name: 'Standard'
+    name: agentModelSku
     capacity: gptCapacity
   }
 
   properties: {
     model: {
       format: 'OpenAI'
-      name: 'gpt-4o'
-      version: '2024-11-20'
+      name: agentModelName
+      version: agentModelVersion
     }
   }
 }
 
 // Deploy the embedding model used for vectorization and search workflows
-resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = {
+resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = if (enableMethodologySearch) {
   parent: aiFoundry
   name: 'text-embedding-3-large'
 
@@ -507,64 +518,6 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   location: location
   tags: tags
   kind: 'functionapp,linux'
-
-Foundry Project Endpoint: https://aif-doed-comments-2117ea4b90e74.cognitiveservices.azure.com/api/projects/aiproj-doed-comments
-Creating agent versions with Azure AI Projects SDK and Entra auth (attempt 1 of 8)...
-Categorization Agent created: RegulatoryCommentCategorizationAgent:1
-Grouping Agent created: RegulatoryCommentGroupingAgent:1
-Validation Agent created: RegulatoryCommentValidationAgent:1
-Follow-up Q&A Agent created: RegulatoryCommentFollowUpAgent:1
-
-Updating Function App settings with agent endpoint, names, and versions...
-Function App settings updated.
-
-  Foundry Project Endpoint:  https://aif-doed-comments-2117ea4b90e74.cognitiveservices.azure.com/api/projects/aiproj-doed-comments
-  Categorization Agent Name: RegulatoryCommentCategorizationAgent
-  Categorization Agent ID:   RegulatoryCommentCategorizationAgent:1
-  Grouping Agent Name:       RegulatoryCommentGroupingAgent
-  Grouping Agent ID:         RegulatoryCommentGroupingAgent:1
-  Validation Agent Name:     RegulatoryCommentValidationAgent
-  Validation Agent ID:       RegulatoryCommentValidationAgent:1
-  Follow-up Q&A Agent Name:  RegulatoryCommentFollowUpAgent
-  Follow-up Q&A Agent ID:    RegulatoryCommentFollowUpAgent:1
-
-
-============================================
-All done! Your app is fully deployed.
-The function runs daily at 3AM EST (8AM UTC).
-Monitor it at: https://portal.azure.com
-============================================
-
-============================================
-Step 2/4: Reading Function deployment settings
-============================================
-Function App:              func-doed-comments-2117ea4b90e74
-Foundry endpoint:          https://aif-doed-comments-2117ea4b90e74.cognitiveservices.azure.com/api/projects/aiproj-doed-comments
-Categorization agent:      RegulatoryCommentCategorizationAgent v1
-Grouping agent:            RegulatoryCommentGroupingAgent v1
-Validation agent:          RegulatoryCommentValidationAgent v1
-Follow-up Q&A agent:       RegulatoryCommentFollowUpAgent v1
-
-============================================
-Step 3/4: Deploying frontend infrastructure
-============================================
-Previewing frontend Bicep changes...
-InvalidTemplateDeployment - The template deployment 'main' is not valid according to the validation procedure. The following resource provider(s) - 'Microsoft.Web/serverFarms (2024-04-01)' reported preflight validation errors. Tracking id is '12d52812-c657-47a6-a3e8-1e619447bb95'. See inner errors for details.
-ValidationForResourceFailed - Validation failed for a resource. Check 'Error.Details[0]' formore information.
-InternalSubscriptionIsOverQuotaForSku - Operation cannot be completed without additional quota. See https://aka.ms/antquotahelp for instructions on requesting limit increases. 
-Additional details - Location:  
-Current Limit (B1 VMs): 0 
-Current Usage: 0
-Amount required for this deployment (B1 VMs): 1 
-(Minimum) New Limit that you should request to enable this deployment: 1. 
-Note that if you experience multiple scaling operations failing (in addition to this one) and need to accommodate the aggregate quota requirements of these operations, you will need to request a higher quota limit than the one currently displayed.
-Frontend Bicep what-if failed.
-At C:\src\doed-regulatory-comment-analyzer-app\deploy.ps1:188 char:9
-+         throw $FailureMessage
-+         ~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : OperationStopped: (Frontend Bicep what-if failed.:String) [], 
-    RuntimeException
-    + FullyQualifiedErrorId : Frontend Bicep what-if failed.
   dependsOn: [
     storageAccountNew
     releasesContainer
@@ -664,6 +617,10 @@ At C:\src\doed-regulatory-comment-analyzer-app\deploy.ps1:188 char:9
         {
           name: 'MAX_COMMENTS'
           value: ''
+        }
+        {
+          name: 'AzureWebJobs.regulatory_comments_daily.Disabled'
+          value: string(!enableScheduledAnalysis)
         }
         
         // Storage account name for blob output (uses managed identity)
@@ -831,7 +788,7 @@ resource deployerStorageBlobRole 'Microsoft.Authorization/roleAssignments@2022-0
   }
 }
 
-resource searchStorageBlobReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource searchStorageBlobReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableMethodologySearch) {
   name: guid(storageAccount.id, searchService.id, 'Storage Blob Data Reader')
   scope: storageAccount
   dependsOn: [
@@ -839,7 +796,7 @@ resource searchStorageBlobReaderRole 'Microsoft.Authorization/roleAssignments@20
   ]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')
-    principalId: searchService.identity.principalId
+    principalId: enableMethodologySearch ? (searchService.?identity.?principalId ?? '') : ''
     principalType: 'ServicePrincipal'
   }
 }
@@ -941,12 +898,12 @@ resource deployerFoundryOpenAiUserRole 'Microsoft.Authorization/roleAssignments@
   }
 }
 
-resource searchFoundryOpenAiUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource searchFoundryOpenAiUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableMethodologySearch) {
   name: guid(aiFoundry.id, searchService.id, 'Cognitive Services OpenAI User')
   scope: aiFoundry
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
-    principalId: searchService.identity.principalId
+    principalId: enableMethodologySearch ? (searchService.?identity.?principalId ?? '') : ''
     principalType: 'ServicePrincipal'
   }
 }
@@ -983,7 +940,7 @@ resource projectFoundryUserRole 'Microsoft.Authorization/roleAssignments@2022-04
 }
 
 // Allow the Foundry project identity to resolve and query the deployed search service.
-resource projectSearchIndexReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource projectSearchIndexReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableMethodologySearch) {
   name: guid(searchService.id, aiProject.id, 'Search Index Data Reader')
   scope: searchService
   properties: {
@@ -993,7 +950,7 @@ resource projectSearchIndexReaderRole 'Microsoft.Authorization/roleAssignments@2
   }
 }
 
-resource projectSearchServiceContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource projectSearchServiceContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableMethodologySearch) {
   name: guid(searchService.id, aiProject.id, 'Search Service Contributor')
   scope: searchService
   properties: {
@@ -1037,16 +994,16 @@ output foundryResourceEndpoint string = aiFoundry.properties.endpoint
 output documentIntelligenceEndpoint string = documentIntelligence.properties.endpoint
 
 @description('Azure AI Search service name')
-output searchServiceName string = searchService.name
+output searchServiceName string = enableMethodologySearch ? searchServiceName : ''
 
 @description('Azure AI Search endpoint')
-output searchServiceEndpoint string = 'https://${searchService.name}.search.windows.net'
+output searchServiceEndpoint string = enableMethodologySearch ? 'https://${searchServiceName}.search.windows.net' : ''
 
 @description('Model deployment name')
 output modelDeploymentName string = modelDeployment.name
 
 @description('Embedding model deployment name')
-output embeddingModelDeploymentName string = embeddingModelDeployment.name
+output embeddingModelDeploymentName string = enableMethodologySearch ? 'text-embedding-3-large' : ''
 
 @description('Application Insights instrumentation key')
 output appInsightsKey string = appInsights.properties.InstrumentationKey

@@ -1,0 +1,428 @@
+@inject ReviewService Reviews
+@inject IWorkspaceRepository SavedItems
+@inject IJSRuntime JS
+@inject ILogger<AnalystWorkbench> Logger
+
+@if (Workspace is { } workspace)
+{
+    <section class="surface-card mt-4" id="workbench" aria-labelledby="workbench-title">
+        <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+            <div>
+                <span class="section-eyebrow">Analyst workspace</span>
+                <h2 id="workbench-title" class="h4">Review, investigate, and prepare a response</h2>
+            </div>
+            <button class="btn btn-sm btn-outline-primary" @onclick="DownloadPackage" disabled="@_busy">Download original + reviewed package</button>
+        </div>
+        <p class="small text-muted">
+            Changes and saved views are shared across this app. Reviewer names are descriptive labels, not verified identities.
+            Original AI results are retained; saved corrections drive the current report and exports.
+        </p>
+        <nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Analyst tools">
+            @foreach (var tab in Tabs)
+            {
+                <button class="@($"btn btn-sm {(_tab == tab.Key ? "btn-primary" : "btn-outline-secondary")}")"
+                        aria-pressed="@(_tab == tab.Key)" @onclick="() => SelectTab(tab.Key)">@tab.Value</button>
+            }
+        </nav>
+        @if (_error is not null)
+        {
+            <div class="alert alert-danger" role="alert">@_error <button class="btn btn-sm btn-link" @onclick="Reload">Reload saved state</button></div>
+        }
+        @if (_message is not null)
+        {
+            <p role="status" class="text-success">@_message</p>
+        }
+
+        @if (_tab == "review")
+        {
+            <div class="filter-grid">
+                <label>Search text, metadata, or captured attachments
+                    <input class="form-control form-control-sm" @bind="_filter.Query" @bind:event="oninput" placeholder="Search all captured text..." />
+                </label>
+                <label>Organization<input class="form-control form-control-sm" @bind="_filter.Organization" @bind:event="oninput" /></label>
+                <label>Theme or primary reason<input class="form-control form-control-sm" @bind="_filter.Theme" @bind:event="oninput" /></label>
+                <label>Stance
+                    <select class="form-select form-select-sm" @bind="_filter.Stance">
+                        <option value="">All stances</option>
+                        @foreach (var stance in Stances) { <option value="@stance">@stance</option> }
+                    </select>
+                </label>
+                <label>Review status
+                    <select class="form-select form-select-sm" @bind="_filter.ReviewStatus">
+                        <option value="">All statuses</option>
+                        <option value="unreviewed">Unreviewed</option>
+                        <option value="approved">Approved</option>
+                        <option value="flagged">Flagged</option>
+                    </select>
+                </label>
+                <label>Posted from (UTC)<input type="date" class="form-control form-control-sm" @bind="_filter.PostedFrom" /></label>
+                <label>Posted through (UTC)<input type="date" class="form-control form-control-sm" @bind="_filter.PostedTo" /></label>
+            </div>
+            <p class="small text-muted mt-2">Search covers saved source snapshots, not unreadable or uncaptured attachment content. Legacy runs may have only categorization text.</p>
+            <div class="saved-views mt-3 mb-3">
+                <label>Saved view
+                    <select class="form-select form-select-sm" value="@_selectedView" @onchange="LoadView" disabled="@_busy">
+                        <option value="">Choose a shared saved view</option>
+                        @foreach (var item in _views)
+                        {
+                            <option value="@item.Id">@(WorkspaceJson.Read<SavedCommentView>(item).Name)</option>
+                        }
+                    </select>
+                </label>
+                @if (_viewToken is not null)
+                {
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="LoadMoreViews" disabled="@_busy">Load more views</button>
+                }
+                <label>New view name<input class="form-control form-control-sm" maxlength="120" @bind="_viewName" /></label>
+                <button class="btn btn-sm btn-outline-primary" @onclick="SaveView" disabled="@_busy">Save filters as a new view</button>
+                <button class="btn btn-sm btn-outline-danger" @onclick="DeleteView" disabled="@(_busy || string.IsNullOrEmpty(_selectedView))">Delete selected view</button>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ClearFilters">Clear filters</button>
+            </div>
+            @if (_filter.PostedFrom > _filter.PostedTo)
+            {
+                <div class="alert alert-warning">The start date must be on or before the end date.</div>
+            }
+            else
+            {
+                var filtered = AnalystEngine.Filter(workspace.Effective, workspace.State, _filter);
+                var currentPage = Math.Clamp(_page, 0, Math.Max(0, (filtered.Count - 1) / PageSize));
+                <p><strong>@filtered.Count</strong> of @workspace.Effective.Categorizations.Count submissions match these filters.</p>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead><tr><th>Submission</th><th>Theme / primary reason</th><th>Stance</th><th>Summary</th><th>Review</th><th>Actions</th></tr></thead>
+                        <tbody>
+                            @foreach (var cat in filtered.Skip(currentPage * PageSize).Take(PageSize))
+                            {
+                                <tr>
+                                    <td><a href="@EvidenceHref(cat.CommentId)">#@cat.SubmissionNumber</a><br /><small>@cat.CommentId</small></td>
+                                    <td>@AnalystEngine.GetField(cat, "primary_theme", "primary_topic", "topic")<br /><small>@AnalystEngine.GetField(cat, "canonical_reason")</small></td>
+                                    <td>@AnalystEngine.GetField(cat, "stance", "position")</td>
+                                    <td class="summary-cell">@AnalystEngine.GetField(cat, "comment_summary", "rationale")</td>
+                                    <td>@(LatestReview(cat.CommentId)?.Status ?? "unreviewed")</td>
+                                    <td><button class="btn btn-sm btn-outline-primary" @onclick="() => EditComment(cat)" disabled="@_busy">Review</button></td>
+                                </tr>
+                            }
+                            @if (filtered.Count == 0)
+                            {
+                                <tr><td colspan="6" class="text-center text-muted py-3">No matching submissions.</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                @if (filtered.Count > PageSize)
+                {
+                    <div class="d-flex align-items-center gap-2 mb-3">
+                        <button class="btn btn-sm btn-outline-secondary" disabled="@(currentPage == 0)" @onclick="() => _page = currentPage - 1">Previous</button>
+                        <span>Page @(currentPage + 1) of @((filtered.Count + PageSize - 1) / PageSize)</span>
+                        <button class="btn btn-sm btn-outline-secondary" disabled="@((currentPage + 1) * PageSize >= filtered.Count)" @onclick="() => _page = currentPage + 1">Next</button>
+                    </div>
+                }
+            }
+            @if (_editing is { } review)
+            {
+                <EditForm Model="review" OnValidSubmit="SaveReview" class="review-editor">
+                    <fieldset disabled="@_busy">
+                        <legend class="h5">Review @review.CommentId</legend>
+                        <a href="@EvidenceHref(review.CommentId)" target="_blank" rel="noopener noreferrer">Inspect the saved source in another tab</a>
+                        <div class="filter-grid mt-3">
+                            <label>Theme<InputText class="form-control" @bind-Value="review.PrimaryTheme" maxlength="300" /></label>
+                            <label>Primary policy reason<InputText class="form-control" @bind-Value="review.CanonicalReason" maxlength="300" /></label>
+                            <label>Stance relative to the proposed change
+                                <InputSelect class="form-select" @bind-Value="review.Stance">
+                                    <option value="">Choose a stance</option>
+                                    @foreach (var stance in Stances) { <option value="@stance">@stance</option> }
+                                </InputSelect>
+                            </label>
+                            <label>Status
+                                <InputSelect class="form-select" @bind-Value="review.Status">
+                                    <option value="unreviewed">Unreviewed</option><option value="approved">Approved</option><option value="flagged">Flagged</option>
+                                </InputSelect>
+                            </label>
+                            <label>Reviewer label<InputText class="form-control" @bind-Value="review.Reviewer" maxlength="120" /></label>
+                        </div>
+                        <label class="d-block mt-2">Corrected summary<InputTextArea class="form-control" rows="3" @bind-Value="review.Summary" maxlength="4000" /></label>
+                        <label class="d-block mt-2">Review notes / reason for correction<InputTextArea class="form-control" rows="2" @bind-Value="review.Notes" maxlength="4000" /></label>
+                        <div class="d-flex gap-2 mt-3">
+                            <button class="btn btn-primary" type="submit">Save revision</button>
+                            <button class="btn btn-outline-secondary" type="button" @onclick="() => _editing = null">Cancel</button>
+                        </div>
+                    </fieldset>
+                </EditForm>
+            }
+        }
+        else if (_tab == "issues")
+        {
+            <p>Draft working material only. Rule sections must come from verified source material or be entered by an analyst. Nothing here is an approved agency response or legal advice.</p>
+            <div class="d-flex gap-2 mb-3">
+                <button class="btn btn-sm btn-outline-primary" @onclick="NewIssue" disabled="@_busy">Add issue</button>
+                <button class="btn btn-sm btn-outline-primary" @onclick="DownloadIssues">Download issue matrix CSV</button>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead><tr><th>Rule section</th><th>Concern</th><th>Supporting submissions</th><th>Requested change</th><th>Draft response</th><th>Status</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var issue in workspace.State.Issues)
+                        {
+                            <tr>
+                                <td>@(string.IsNullOrWhiteSpace(issue.RuleSection) ? "Not identified" : issue.RuleSection)</td>
+                                <td>@issue.Concern</td>
+                                <td>
+                                    @foreach (var number in issue.SubmissionNumbers)
+                                    {
+                                        var cat = workspace.Effective.Categorizations.FirstOrDefault(c => c.SubmissionNumber == number);
+                                        @if (cat is not null) { <a class="me-1" href="@EvidenceHref(cat.CommentId)">#@number</a> }
+                                    }
+                                </td>
+                                <td>@issue.RequestedChange</td><td class="summary-cell">@issue.DraftResponse</td><td>@issue.ReviewStatus</td>
+                                <td><button class="btn btn-sm btn-outline-primary" @onclick="() => EditIssue(issue)" disabled="@_busy">Edit</button></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (_issue is { } editingIssue)
+            {
+                <EditForm Model="editingIssue" OnValidSubmit="SaveIssue" class="review-editor">
+                    <fieldset disabled="@_busy">
+                        <legend class="h5">Edit draft issue response</legend>
+                        <div class="filter-grid">
+                            <label>Rule section<InputText class="form-control" @bind-Value="editingIssue.RuleSection" placeholder="Leave blank if not verified" maxlength="300" /></label>
+                            <label>Supporting submission numbers<input class="form-control" @bind="_issueSubmissions" placeholder="1, 3, 12" /></label>
+                            <label>Review status
+                                <InputSelect class="form-select" @bind-Value="editingIssue.ReviewStatus">
+                                    <option value="draft">Draft</option><option value="in-review">In review</option><option value="approved">Reviewed / approved by analyst</option><option value="flagged">Flagged</option>
+                                </InputSelect>
+                            </label>
+                            <label>Reviewer label<InputText class="form-control" @bind-Value="editingIssue.Reviewer" maxlength="120" /></label>
+                        </div>
+                        <label class="d-block mt-2">Concern<InputTextArea class="form-control" @bind-Value="editingIssue.Concern" maxlength="4000" /></label>
+                        <label class="d-block mt-2">Requested change<InputTextArea class="form-control" @bind-Value="editingIssue.RequestedChange" maxlength="4000" /></label>
+                        <label class="d-block mt-2">Draft response (requires human review)<InputTextArea class="form-control" rows="4" @bind-Value="editingIssue.DraftResponse" maxlength="12000" /></label>
+                        <label class="d-block mt-2">Notes<InputTextArea class="form-control" @bind-Value="editingIssue.Notes" maxlength="4000" /></label>
+                        <div class="d-flex gap-2 mt-3"><button class="btn btn-primary" type="submit">Save issue revision</button><button class="btn btn-outline-secondary" type="button" @onclick="() => _issue = null">Cancel</button></div>
+                    </fieldset>
+                </EditForm>
+            }
+        }
+        else if (_tab == "duplicates")
+        {
+            <div class="row g-3 mb-3">
+                <div class="col"><strong>@workspace.Effective.TotalComments</strong><div>Submission volume (unchanged)</div></div>
+                <div class="col"><strong>@DistinctReasons</strong><div>Distinct recorded primary reasons</div></div>
+                <div class="col"><strong>@_duplicates.Count</strong><div>Detected similar-text groups</div></div>
+            </div>
+            <p class="small">Exact and near-duplicate text are reading aids, not proof of coordination, unique authors, or identical positions. All submissions remain in the counts and analysis. Near matches use word-shingle similarity, not an AI judgment of motive.</p>
+            @if (_duplicates.Count == 0)
+            {
+                <p class="text-muted">No similar-text groups were detected in the captured sources. Missing source text cannot be compared.</p>
+            }
+            @foreach (var group in _duplicates)
+            {
+                <article class="border rounded p-3 mb-2">
+                    <h3 class="h6">@group.Kind text &middot; @group.CommentIds.Count submissions &middot; @group.Similarity.ToString("P0") similarity</h3>
+                    <p>@group.RepresentativeExcerpt</p>
+                    <p class="small">@group.Variation</p>
+                    <div class="d-flex gap-2 flex-wrap">
+                        @foreach (var id in group.CommentIds) { <a href="@EvidenceHref(id)">@id</a> }
+                    </div>
+                </article>
+            }
+        }
+        else
+        {
+            <p>@workspace.State.Revisions.Count saved comment revisions. Original AI classifications remain unchanged in the saved run.</p>
+            <div class="table-responsive">
+                <table class="table table-sm">
+                    <thead><tr><th>Time (UTC)</th><th>Comment</th><th>Reviewer label</th><th>Saved classification</th><th>Summary</th><th>Status / notes</th></tr></thead>
+                    <tbody>
+                        @foreach (var revision in workspace.State.Revisions.AsEnumerable().Reverse())
+                        {
+                            <tr><td>@revision.At.ToString("u")</td><td><a href="@EvidenceHref(revision.CommentId)">@revision.CommentId</a></td><td>@revision.Reviewer</td><td>@revision.PrimaryTheme<br />@revision.CanonicalReason<br />@revision.Stance</td><td>@revision.Summary</td><td>@revision.Status<br />@revision.Notes</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <details class="mt-2">
+                <summary>Issue response revision history (@workspace.State.IssueHistory.Count)</summary>
+                @foreach (var revision in workspace.State.IssueHistory.AsEnumerable().Reverse())
+                {
+                    <article class="border rounded p-2 mt-2"><strong>@revision.UpdatedAt.ToString("u") - @revision.Reviewer - @revision.ReviewStatus</strong><p>@revision.Concern</p><p>@revision.DraftResponse</p><p>@revision.Notes</p></article>
+                }
+            </details>
+            <details class="mt-3"><summary>Original AI collective analysis</summary><pre class="original-json">@WorkspaceJson.Write(workspace.Original.Grouped)</pre></details>
+        }
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public AnalysisWorkspace? Workspace { get; set; }
+    [Parameter] public EventCallback<AnalysisWorkspace> WorkspaceChanged { get; set; }
+    private const int PageSize = 25;
+    private static readonly string[] Stances = ["supportive", "opposing", "neutral", "mixed", "procedural"];
+    private static readonly Dictionary<string, string> Tabs = new()
+    {
+        ["review"] = "Review and search", ["issues"] = "Issue-response matrix",
+        ["duplicates"] = "Similar submissions", ["history"] = "Revision history",
+    };
+    private string _tab = "review";
+    private CommentSearchFilter _filter = new();
+    private CommentReview? _editing;
+    private IssueResponse? _issue;
+    private string _issueSubmissions = string.Empty;
+    private IReadOnlyList<DuplicateGroup> _duplicates = Array.Empty<DuplicateGroup>();
+    private List<WorkspaceItem> _views = new();
+    private string? _viewToken;
+    private bool _viewsLoaded;
+    private string _selectedView = string.Empty;
+    private string _viewName = string.Empty;
+    private int _page;
+    private bool _busy;
+    private string? _error;
+    private string? _message;
+    private AnalysisWorkspace Current => Workspace ?? throw new InvalidOperationException("No analysis is loaded.");
+    private Guid RunId => Current.Original.PersistedId ?? throw new InvalidOperationException("Save this analysis before reviewing it.");
+    private int DistinctReasons => Current.Effective.Categorizations.Select(c => AnalystEngine.GetField(c, "canonical_reason", "primary_theme", "primary_topic"))
+        .Where(s => !string.IsNullOrWhiteSpace(s)).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!_viewsLoaded)
+        {
+            await Execute(async () =>
+            {
+                var page = await SavedItems.ListPageAsync("savedViews");
+                _views = page.Items.ToList();
+                _viewToken = page.ContinuationToken;
+                _viewsLoaded = true;
+            });
+        }
+        if (_tab == "duplicates") _duplicates = AnalystEngine.FindDuplicates(Current.Effective);
+    }
+
+    private void SelectTab(string key)
+    {
+        _tab = key;
+        if (key == "duplicates") _duplicates = AnalystEngine.FindDuplicates(Current.Effective);
+    }
+
+    private string EvidenceHref(string id) => $"evidence/{RunId:D}?commentId={Uri.EscapeDataString(id)}";
+    private CommentReview? LatestReview(string id) => Current.State.Revisions.LastOrDefault(r => r.CommentId.Equals(id, StringComparison.OrdinalIgnoreCase));
+
+    private void EditComment(CategorizationResult cat)
+    {
+        var previous = LatestReview(cat.CommentId);
+        var stance = AnalystEngine.GetField(cat, "stance", "position").ToLowerInvariant();
+        stance = stance switch { "support" => "supportive", "oppose" or "opposed" => "opposing", _ => stance };
+        _editing = new CommentReview
+        {
+            CommentId = cat.CommentId,
+            PrimaryTheme = AnalystEngine.GetField(cat, "primary_theme", "primary_topic", "topic"),
+            CanonicalReason = AnalystEngine.GetField(cat, "canonical_reason", "primary_theme", "primary_topic"),
+            Stance = Stances.Contains(stance) ? stance : string.Empty,
+            Summary = AnalystEngine.GetField(cat, "comment_summary", "rationale"),
+            Status = previous?.Status ?? "unreviewed",
+            Reviewer = previous?.Reviewer ?? string.Empty,
+            Notes = previous?.Notes ?? string.Empty,
+        };
+        _message = null;
+    }
+
+    private Task SaveReview() => Execute(async () =>
+    {
+        if (_editing is null) throw new InvalidOperationException("Choose a submission to review.");
+        var updated = await Reviews.SaveReviewAsync(RunId, _editing, Current.Version);
+        _editing = null;
+        await WorkspaceChanged.InvokeAsync(updated);
+        _message = "Revision saved. Current classifications, summary, counts, and report exports now use the reviewed values.";
+    });
+
+    private void NewIssue() { _issue = new IssueResponse(); _issueSubmissions = string.Empty; }
+    private void EditIssue(IssueResponse issue) { _issue = WorkspaceJson.Clone(issue); _issueSubmissions = string.Join(", ", issue.SubmissionNumbers); }
+    private Task SaveIssue() => Execute(async () =>
+    {
+        if (_issue is null) throw new InvalidOperationException("Choose an issue to edit.");
+        _issue.SubmissionNumbers = _issueSubmissions.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => int.TryParse(s, out var n) && n > 0 ? n : throw new ArgumentException("Submission numbers must be positive integers separated by commas.")).Distinct().ToList();
+        var updated = await Reviews.SaveIssueAsync(RunId, _issue, Current.Version);
+        _issue = null;
+        await WorkspaceChanged.InvokeAsync(updated);
+        _message = "Issue response revision saved. Draft language still requires human review.";
+    });
+
+    private void ClearFilters() { _filter = new(); _selectedView = string.Empty; _page = 0; }
+    private Task SaveView() => Execute(async () =>
+    {
+        if (string.IsNullOrWhiteSpace(_viewName)) throw new ArgumentException("Enter a name for the saved view.");
+        if (_viewName.Trim().Length > 120) throw new ArgumentException("A saved view name must be 120 characters or fewer.");
+        if (_filter.PostedFrom > _filter.PostedTo) throw new ArgumentException("The start date must be on or before the end date.");
+        var view = new SavedCommentView { Name = _viewName.Trim(), Filter = WorkspaceJson.Clone(_filter) };
+        var saved = await SavedItems.SaveAsync("savedViews", view.Id.ToString("D"), WorkspaceJson.Write(view), null);
+        _views.Insert(0, saved);
+        _selectedView = saved.Id;
+        _viewName = string.Empty;
+        _message = "Shared view saved.";
+    });
+    private Task LoadView(ChangeEventArgs args) => Execute(async () =>
+    {
+        _selectedView = args.Value?.ToString() ?? string.Empty;
+        if (_selectedView.Length == 0) { ClearFilters(); return; }
+        var item = await SavedItems.GetAsync("savedViews", _selectedView)
+            ?? throw new InvalidOperationException("That saved view was deleted. Reload the saved state.");
+        _filter = WorkspaceJson.Read<SavedCommentView>(item).Filter;
+        _page = 0;
+    });
+    private Task LoadMoreViews() => Execute(async () =>
+    {
+        var page = await SavedItems.ListPageAsync("savedViews", continuationToken: _viewToken);
+        _views.AddRange(page.Items.Where(item => _views.All(existing => existing.Id != item.Id)));
+        _viewToken = page.ContinuationToken;
+    });
+    private Task DeleteView() => Execute(async () =>
+    {
+        var item = _views.FirstOrDefault(v => v.Id == _selectedView)
+            ?? throw new InvalidOperationException("Choose a saved view first.");
+        if (!await JS.InvokeAsync<bool>("confirm", "Delete this shared saved view?")) return;
+        await SavedItems.DeleteAsync("savedViews", item.Id, item.Version);
+        _views.Remove(item);
+        _selectedView = string.Empty;
+        _message = "Saved view deleted.";
+    });
+    private Task Reload() => Execute(async () =>
+    {
+        var updated = await Reviews.OpenAsync(RunId);
+        _editing = null;
+        _issue = null;
+        await WorkspaceChanged.InvokeAsync(updated);
+        var page = await SavedItems.ListPageAsync("savedViews");
+        _views = page.Items.ToList();
+        _viewToken = page.ContinuationToken;
+        _message = "Saved state reloaded.";
+    });
+    private Task DownloadPackage() => Execute(async () =>
+    {
+        var latest = await Reviews.OpenAsync(RunId);
+        await JS.InvokeVoidAsync("downloadFile", $"review-package_{RunId:D}.json", "application/json",
+            WorkspaceJson.Write(new { original = latest.Original, reviewed = latest.Effective, reviewState = latest.State, revision = latest.Version }));
+    });
+    private Task DownloadIssues() => Execute(async () =>
+    {
+        var latest = await Reviews.OpenAsync(RunId);
+        await JS.InvokeVoidAsync("downloadFile", $"issue-matrix_{RunId:D}.csv", "text/csv;charset=utf-8", AnalystReportExporter.IssuesCsv(latest.State.Issues));
+    });
+
+    private async Task Execute(Func<Task> action)
+    {
+        _busy = true;
+        _error = null;
+        _message = null;
+        try { await action(); }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException or HttpRequestException
+            or Microsoft.Azure.Cosmos.CosmosException or Azure.RequestFailedException
+            or System.Text.Json.JsonException or System.Data.Common.DbException or Microsoft.EntityFrameworkCore.DbUpdateException)
+        {
+            Logger.LogWarning(ex, "Analyst workspace action failed");
+            _error = ex.Message;
+        }
+        finally { _busy = false; }
+    }
+}

@@ -21,7 +21,7 @@ param validationAgentName = readEnvironmentVariable('FOUNDRY_VALIDATION_AGENT_NA
 param validationAgentVersion = readEnvironmentVariable('FOUNDRY_VALIDATION_AGENT_VERSION', 'latest')
 param followUpAgentName = readEnvironmentVariable('FOUNDRY_FOLLOWUP_AGENT_NAME', '')
 param followUpAgentVersion = readEnvironmentVariable('FOUNDRY_FOLLOWUP_AGENT_VERSION', 'latest')
-param modelDeploymentName = readEnvironmentVariable('FOUNDRY_MODEL_DEPLOYMENT', 'gpt-5.4')
+param modelDeploymentName = readEnvironmentVariable('FOUNDRY_MODEL_DEPLOYMENT', 'gpt-5.5')
 
 param persistenceProvider = readEnvironmentVariable('PERSISTENCE_PROVIDER', 'Sqlite')
 param analysisDbConnectionString = readEnvironmentVariable('ANALYSIS_DB_CONNECTION_STRING', '')
@@ -32,6 +32,12 @@ param cosmosSummaryContainerName = readEnvironmentVariable('COSMOS_SUMMARY_CONTA
 param cosmosCreateIfNotExists = readEnvironmentVariable('COSMOS_CREATE_IF_NOT_EXISTS', 'false') == 'true'
 param provisionCosmosResources = readEnvironmentVariable('PROVISION_COSMOS_RESOURCES', 'false') == 'true'
 param cosmosAccountName = readEnvironmentVariable('COSMOS_ACCOUNT_NAME', '')
+param workspaceContainerName = readEnvironmentVariable('WORKSPACE_CONTAINER_NAME', 'analyst-workspace')
+param enableDocketMonitoring = readEnvironmentVariable('ENABLE_DOCKET_MONITORING', 'true') == 'true'
+param monitoringIntervalMinutes = int(readEnvironmentVariable('MONITORING_INTERVAL_MINUTES', '60'))
+param allowedClientNetworks = empty(readEnvironmentVariable('ALLOWED_CLIENT_CIDR', ''))
+  ? []
+  : [readEnvironmentVariable('ALLOWED_CLIENT_CIDR')]
 
 param enablePayloadStorage = readEnvironmentVariable('ENABLE_PAYLOAD_STORAGE', 'true') == 'true'
 param analysisPayloadBlobContainerUri = readEnvironmentVariable('ANALYSIS_PAYLOAD_BLOB_CONTAINER_URI', '')

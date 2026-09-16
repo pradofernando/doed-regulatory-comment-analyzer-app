@@ -67,7 +67,11 @@ public sealed class AnalysisJobManager : IDisposable
     }
 
     /// <summary>Kicks off a new background analysis job and returns immediately.</summary>
-    public AnalysisJob Start(string documentId, IReadOnlyList<CommentResource> comments, ApiSettings settings)
+    public AnalysisJob Start(
+        string documentId,
+        IReadOnlyList<CommentResource> comments,
+        ApiSettings settings,
+        AnalysisInputMetadata? inputMetadata = null)
     {
         var job = new AnalysisJob
         {
@@ -79,7 +83,10 @@ public sealed class AnalysisJobManager : IDisposable
         _jobs[job.Id] = job;
 
         // Snapshot the inputs onto the job so the worker doesn't touch circuit-scoped state.
-        job.Worker = Task.Run(() => RunAsync(job, comments, settings));
+        var settingsSnapshot = WorkspaceJson.Clone(settings);
+        var metadataSnapshot = inputMetadata is null ? null : WorkspaceJson.Clone(inputMetadata);
+        var commentSnapshot = WorkspaceJson.Clone(comments.ToList());
+        job.Worker = Task.Run(() => RunAsync(job, commentSnapshot, settingsSnapshot, metadataSnapshot));
         return job;
     }
 
@@ -104,7 +111,11 @@ public sealed class AnalysisJobManager : IDisposable
         }
     }
 
-    private async Task RunAsync(AnalysisJob job, IReadOnlyList<CommentResource> comments, ApiSettings settings)
+    private async Task RunAsync(
+        AnalysisJob job,
+        IReadOnlyList<CommentResource> comments,
+        ApiSettings settings,
+        AnalysisInputMetadata? inputMetadata)
     {
         using var activity = _telemetry.StartAnalysis(job.Id, comments.Count);
         using var logScope = _logger.BeginScope(new Dictionary<string, object?>
@@ -130,7 +141,7 @@ public sealed class AnalysisJobManager : IDisposable
 
         try
         {
-            var run = await foundry.RunAsync(job.DocumentId, comments, settings, progress, job.Cts.Token)
+            var run = await foundry.RunAsync(job.DocumentId, comments, settings, progress, job.Cts.Token, inputMetadata)
                 .ConfigureAwait(false);
             job.Cts.Token.ThrowIfCancellationRequested();
             job.Run = run;
@@ -141,19 +152,9 @@ public sealed class AnalysisJobManager : IDisposable
             }
             else
             {
-                try
-                {
-                    job.SavedRunId = await repo.SaveRunAsync(run, job.Cts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (job.Cts.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception saveEx)
-                {
-                    _logger.LogWarning(saveEx, "Failed to persist analysis run for document {DocId}.", job.DocumentId);
-                }
+                job.SavedRunId = await repo.SaveRunAsync(run, job.Cts.Token).ConfigureAwait(false);
             }
+            run.PersistedId = job.SavedRunId;
 
             if (run.Succeeded)
             {

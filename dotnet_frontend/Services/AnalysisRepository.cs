@@ -21,6 +21,8 @@ public sealed class AnalysisRepository : IAnalysisRepository
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = false,
+        PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
     private readonly IDbContextFactory<AnalysisDbContext> _factory;
@@ -52,6 +54,8 @@ public sealed class AnalysisRepository : IAnalysisRepository
             PatternsJson = JsonSerializer.Serialize(run.Grouped.Patterns, JsonOpts),
             RecommendationsJson = JsonSerializer.Serialize(run.Grouped.Recommendations, JsonOpts),
             FollowUpThreadId = run.FollowUpThreadId,
+            SourcesJson = JsonSerializer.Serialize(run.Sources, JsonOpts),
+            ProvenanceJson = run.Provenance is null ? null : JsonSerializer.Serialize(run.Provenance, JsonOpts),
         };
 
         foreach (var c in run.Categorizations)
@@ -61,6 +65,7 @@ public sealed class AnalysisRepository : IAnalysisRepository
                 RunId = stored.Id,
                 SubmissionNumber = c.SubmissionNumber,
                 CommentId = c.CommentId,
+                RowData = c.RowData,
                 RawResponse = c.RawResponse,
                 ParsedJson = JsonSerializer.Serialize(c.Parsed, JsonOpts),
                 TextSource = c.TextSource,
@@ -81,6 +86,7 @@ public sealed class AnalysisRepository : IAnalysisRepository
                 SubmissionNumbersJson = JsonSerializer.Serialize(g.SubmissionNumbers, JsonOpts),
                 StanceDistributionJson = JsonSerializer.Serialize(g.StanceDistribution, JsonOpts),
                 CommonArgumentsJson = JsonSerializer.Serialize(g.CommonArguments, JsonOpts),
+                EvidenceJson = JsonSerializer.Serialize(g.Evidence, JsonOpts),
             });
         }
 
@@ -217,6 +223,7 @@ public sealed class AnalysisRepository : IAnalysisRepository
 
         var run = new AnalysisRun
         {
+            PersistedId = stored.Id,
             SessionName = stored.SessionName,
             DocumentId = stored.DocumentId,
             StartedAt = stored.StartedAt,
@@ -226,6 +233,8 @@ public sealed class AnalysisRepository : IAnalysisRepository
             Succeeded = stored.Succeeded,
             ErrorMessage = stored.ErrorMessage,
             FollowUpThreadId = stored.FollowUpThreadId,
+            Sources = DeserializeSnapshot<List<CommentSourceSnapshot>>(stored.SourcesJson) ?? new(),
+            Provenance = DeserializeSnapshot<AnalysisProvenance>(stored.ProvenanceJson),
         };
 
         run.Grouped = new GroupedAnalysis
@@ -247,6 +256,7 @@ public sealed class AnalysisRepository : IAnalysisRepository
                 SubmissionNumbers = SafeDeserialize<List<int>>(g.SubmissionNumbersJson) ?? new(),
                 StanceDistribution = SafeDeserialize<Dictionary<string, int>>(g.StanceDistributionJson) ?? new(),
                 CommonArguments = SafeDeserialize<List<string>>(g.CommonArgumentsJson) ?? new(),
+                Evidence = DeserializeSnapshot<List<FindingEvidence>>(g.EvidenceJson) ?? new(),
             });
         }
 
@@ -256,6 +266,7 @@ public sealed class AnalysisRepository : IAnalysisRepository
             {
                 SubmissionNumber = c.SubmissionNumber,
                 CommentId = c.CommentId,
+                RowData = c.RowData,
                 RawResponse = c.RawResponse,
                 Parsed = SafeDeserialize<Dictionary<string, object?>>(c.ParsedJson) ?? new(),
                 TextSource = c.TextSource,
@@ -280,12 +291,15 @@ public sealed class AnalysisRepository : IAnalysisRepository
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
-    private static T? SafeDeserialize<T>(string json)
+    private static T? SafeDeserialize<T>(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return default;
         try { return JsonSerializer.Deserialize<T>(json, JsonOpts); }
         catch { return default; }
     }
+
+    private static T? DeserializeSnapshot<T>(string? json) =>
+        string.IsNullOrWhiteSpace(json) ? default : JsonSerializer.Deserialize<T>(json, JsonOpts);
 
     private static AnalysisPage<AnalysisRunSummary> ToPage(
         List<AnalysisRunSummary> rows,

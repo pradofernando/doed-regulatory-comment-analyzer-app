@@ -92,6 +92,20 @@ builder.Services.AddOptions<FunctionAnalysisOptions>()
         "AnalysisBackend:TimeoutMinutes must be between 1 and 180.")
     .ValidateOnStart();
 builder.Services.AddSingleton<IAnalysisPayloadStore, BlobAnalysisPayloadStore>();
+builder.Services.AddOptions<WorkspaceOptions>()
+    .Bind(builder.Configuration.GetSection(WorkspaceOptions.SectionName))
+    .Validate(options => !string.IsNullOrWhiteSpace(options.ContainerName),
+        "Workspace:ContainerName is required.")
+    .ValidateOnStart();
+builder.Services.AddScoped<ReviewService>();
+builder.Services.AddOptions<MonitoringOptions>().Bind(builder.Configuration.GetSection(MonitoringOptions.SectionName))
+    .Validate(o => o.PollIntervalMinutes is >= 1 and <= 1440, "Monitoring interval must be 1 to 1440 minutes.")
+    .Validate(o => o.MaxAutoAnalysisComments is >= 1 and <= 1000, "Automatic analysis must be limited to 1 to 1000 comments per check.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<IDocketCommentSource, RegulationsDocketSource>();
+builder.Services.AddScoped<DocketMonitorService>();
+builder.Services.AddHostedService<DocketMonitorWorker>();
 
 // API settings + typed client for the regulatory comments backend.
 builder.Services.AddSingleton<ApiSettingsStore>();
@@ -164,6 +178,7 @@ if (persistenceProvider.Equals("Sqlite", StringComparison.OrdinalIgnoreCase))
     builder.Services.AddDbContextFactory<AnalysisDbContext>(options => options.UseSqlite(connectionString));
     builder.Services.AddScoped<AnalysisRepository>();
     builder.Services.AddScoped<IAnalysisRepository>(sp => sp.GetRequiredService<AnalysisRepository>());
+    builder.Services.AddScoped<IWorkspaceRepository, RelationalWorkspaceRepository>();
     usesRelationalPersistence = true;
 }
 else if (persistenceProvider.Equals("AzureSql", StringComparison.OrdinalIgnoreCase)
@@ -176,6 +191,7 @@ else if (persistenceProvider.Equals("AzureSql", StringComparison.OrdinalIgnoreCa
         options.UseSqlServer(connectionString, sql => sql.EnableRetryOnFailure()));
     builder.Services.AddScoped<AnalysisRepository>();
     builder.Services.AddScoped<IAnalysisRepository>(sp => sp.GetRequiredService<AnalysisRepository>());
+    builder.Services.AddScoped<IWorkspaceRepository, RelationalWorkspaceRepository>();
     usesRelationalPersistence = true;
 }
 else if (persistenceProvider.Equals("Cosmos", StringComparison.OrdinalIgnoreCase))
@@ -212,6 +228,7 @@ else if (persistenceProvider.Equals("Cosmos", StringComparison.OrdinalIgnoreCase
         return new CosmosContainerSet(runs, summaries, hasDedicatedSummaries);
     });
     builder.Services.AddScoped<IAnalysisRepository, CosmosAnalysisRepository>();
+    builder.Services.AddScoped<IWorkspaceRepository, CosmosWorkspaceRepository>();
 }
 else
 {
@@ -254,6 +271,10 @@ else
             Path = "/followUpHistory/[]/text/?",
         });
         await database.Database.CreateContainerIfNotExistsAsync(runContainer);
+        var workspaceOptions = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<WorkspaceOptions>>().Value;
+        var workspaceContainer = new ContainerProperties(workspaceOptions.ContainerName, "/id");
+        workspaceContainer.IndexingPolicy.ExcludedPaths.Add(new ExcludedPath { Path = "/json/?" });
+        await database.Database.CreateContainerIfNotExistsAsync(workspaceContainer);
 
         if (!string.IsNullOrWhiteSpace(cosmosOptions.SummaryContainerName)
             && !cosmosOptions.SummaryContainerName.Equals(

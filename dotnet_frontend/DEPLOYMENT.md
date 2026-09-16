@@ -1,8 +1,52 @@
 # Azure Deployment Runbook
 
-This runbook deploys the .NET 9 Blazor Server application in this folder to Azure App Service by using Azure Developer CLI (`azd`) and Bicep.
+This runbook covers the .NET 9 Blazor Server frontend and its integration with the
+Function-owned analysis stack. The **complete deployment** uses the repository-root
+[`deploy.ps1`](../deploy.ps1); the frontend-only procedure below uses Azure Developer
+CLI (`azd`) and Bicep.
 
-The deployment reuses an existing Microsoft Foundry project and existing prompt agents. It does not create, publish, or modify Foundry agents or model deployments.
+The frontend-only procedure reuses an existing Foundry project and prompt agents.
+The root deployment also provisions the Function/Foundry resources and publishes
+all four instruction sets from [`AGENT_PROMPTS.md`](../azure_func_v2/AGENT_PROMPTS.md).
+
+## Current full-stack readiness
+
+The personal target confirmed on 2026-09-16 is GPT-5.5/Functions in East US and
+the B1 web app/Cosmos in Central US. GPT-5.5 `2026-04-24`, GlobalStandard, is
+explicitly pinned; no model downgrade is allowed. Automatic daily AI analysis
+and methodology Search/embeddings remain disabled unless explicitly enabled.
+The web app's hourly watchlist checks are separate; automatic AI analysis is a
+per-watch opt-in.
+
+**Network prerequisite still outstanding:** the checked subscription inherits
+policies that modify Storage, Key Vault and Cosmos accounts to disable public
+network access. These templates currently use their public endpoints and do not
+provision the required private paths. Add approved VNet integration, private
+endpoints and DNS connectivity for both application identities and the deployment
+path before treating the stack as deployable. Do not bypass policy by reopening
+endpoints or applying exclusion tags.
+
+ARM validation/what-if can pass under a modify policy while the eventual
+application cannot reach its dependencies. Live network and service checks remain
+necessary after an approved deployment. The browser's client-IP allowlist limits
+inbound web access; it does not solve outbound access to private Azure services.
+
+The validation-only plan and proof are retained locally in
+`.azure/deployment-plan.md`. Validation creates no Azure resources.
+
+### Deployment interpreter and packages
+
+- `-AgentPythonExecutable` selects the interpreter used by agent creation. Install
+  [`requirements-agent-creation.txt`](../azure_func_v2/infra/requirements-agent-creation.txt)
+  there; the script checks both the SDK symbols and pinned Projects SDK version.
+- Runtime Function dependencies remain in the Function
+  [`requirements.txt`](../azure_func_v2/doed_regulatory_comments_func/requirements.txt).
+  Avoid mixing this environment with the root legacy Semantic Kernel pipeline.
+- The Flex ZIP packager includes only the seven required runtime files and uses
+  PowerShell `Compress-Archive` for an actual ZIP on Windows and Linux.
+- The frontend package excludes all local data/settings, build directories, IaC,
+  azd state and development configuration. The favicon and runtime static assets
+  remain included.
 
 ## Deployment architecture
 
@@ -43,9 +87,9 @@ The App Service uses a system-assigned managed identity for Azure service access
 
 | Condition | Resources |
 | --- | --- |
-| `ENABLE_ATTACHMENT_OCR=true` | Document Intelligence S0 account and Cognitive Services Data Reader assignment. |
+| `ENABLE_ATTACHMENT_OCR=true` | Document Intelligence S0 account and Cognitive Services User assignment (required to submit analysis operations). |
 | `ENABLE_PAYLOAD_STORAGE=true` | Private Blob container, storage account, and Storage Blob Data Contributor assignment. |
-| `PROVISION_COSMOS_RESOURCES=true` | Serverless Cosmos account, database, aggregate container, summary container, and Cosmos DB Built-in Data Contributor assignment. |
+| `PROVISION_COSMOS_RESOURCES=true` | Serverless Cosmos account, database, aggregate/summary/workspace containers, and Cosmos DB Built-in Data Contributor assignment. |
 | `ALERT_EMAIL` is nonempty | Azure Monitor action group with an email receiver. |
 
 The Blob resource is currently used only by the Cosmos provider. Disable `ENABLE_PAYLOAD_STORAGE` when using SQLite or Azure SQL unless you intentionally want the storage account available for a later migration.
@@ -219,7 +263,7 @@ azd env set FOUNDRY_FOLLOWUP_AGENT_VERSION latest
 The following value is informational; each prompt agent selects its own model in Foundry:
 
 ```powershell
-azd env set FOUNDRY_MODEL_DEPLOYMENT gpt-5.4
+azd env set FOUNDRY_MODEL_DEPLOYMENT gpt-5.5
 ```
 
 Do not rely on the sample endpoint default in `main.bicepparam`. Always set `FOUNDRY_PROJECT_ENDPOINT` for the target environment.
@@ -237,14 +281,14 @@ values, not a recommendation for every environment.
 | `AZURE_SUBSCRIPTION_ID` | Yes | None | Target subscription. |
 | `AZURE_LOCATION` | Yes | None | Resource-group and Azure resource location. |
 | `REGS_API_KEY` | Yes | Empty | Regulations.gov API key; becomes a Key Vault secret. |
-| `FOUNDRY_PROJECT_ENDPOINT` | Yes | Sample endpoint in `main.bicepparam` | Existing Foundry project endpoint. Always override it. |
+| `FOUNDRY_PROJECT_ENDPOINT` | Yes | Empty | Existing Foundry project endpoint for frontend-only deployment. |
 | `FOUNDRY_CATEGORIZATION_AGENT_NAME` | Yes | `RegulatoryCommentCategorizationAgent` | Per-comment prompt agent name. |
 | `FOUNDRY_CATEGORIZATION_AGENT_VERSION` | Yes | `latest` | Categorization agent version; pin for reproducibility. |
 | `FOUNDRY_GROUPING_AGENT_NAME` | Yes | `RegulatoryCommentGroupingAgent` | Grouping/collective-analysis prompt agent name. |
 | `FOUNDRY_GROUPING_AGENT_VERSION` | Yes | `latest` | Grouping agent version; pin for reproducibility. |
 | `FOUNDRY_FOLLOWUP_AGENT_NAME` | No | Empty | Follow-up Q&A agent; empty disables follow-up chat. |
 | `FOUNDRY_FOLLOWUP_AGENT_VERSION` | No | `latest` | Follow-up agent version. |
-| `FOUNDRY_MODEL_DEPLOYMENT` | No | `gpt-5.4` | Informational setting; prompt agents choose their configured model. |
+| `FOUNDRY_MODEL_DEPLOYMENT` | No | `gpt-5.5` | Configured model label; the root deployment pins and verifies the model version. |
 
 ### Persistence
 
@@ -256,6 +300,7 @@ values, not a recommendation for every environment.
 | `COSMOS_DATABASE_NAME` | Cosmos only | `doed-regulatory-comments` | Database containing run documents. |
 | `COSMOS_CONTAINER_NAME` | Cosmos only | `analysis-runs` | Aggregate container, partitioned by `/id`. |
 | `COSMOS_SUMMARY_CONTAINER_NAME` | Cosmos only | `analysis-run-summaries` | Summary container, partitioned by `/documentIdNormalized`. |
+| `WORKSPACE_CONTAINER_NAME` | Cosmos only | `analyst-workspace` | Required workspace container, partitioned by `/id`, for reviews, views, watches and notifications. |
 | `COSMOS_CREATE_IF_NOT_EXISTS` | No | `false` | Let the app attempt database/container creation at startup. Prefer IaC. |
 | `PROVISION_COSMOS_RESOURCES` | No | `false` | Provision serverless Cosmos in this template. Set provider to `Cosmos` too. |
 | `COSMOS_ACCOUNT_NAME` | No | Generated | Optional globally unique account name for provisioned Cosmos. |
@@ -272,6 +317,9 @@ values, not a recommendation for every environment.
 | `FOUNDRY_INPUT_USD_PER_MILLION_TOKENS` | No | `0` | Input-token rate used for estimated-cost telemetry. |
 | `FOUNDRY_OUTPUT_USD_PER_MILLION_TOKENS` | No | `0` | Output-token rate used for estimated-cost telemetry. |
 | `ALERT_EMAIL` | No | Empty | Email receiver for the Azure Monitor action group. |
+| `ENABLE_DOCKET_MONITORING` | No | `true` in deployment | Enable periodic watchlist checks while the always-on web app runs. |
+| `MONITORING_INTERVAL_MINUTES` | No | `60` | Check interval, 1-1440 minutes. |
+| `ALLOWED_CLIENT_CIDR` | Personal frontend-only profile | Empty | One allowed client CIDR; empty preserves public web access. The root script accepts multiple networks using `-AllowedClientNetworks`. |
 
 These Bicep settings are currently edited in `main.bicepparam` rather than set through azd:
 
@@ -413,7 +461,7 @@ The checked-in `main.bicepparam` enables OCR unless overridden:
 azd env set ENABLE_ATTACHMENT_OCR true
 ```
 
-This provisions Document Intelligence and assigns Cognitive Services Data Reader to the App Service identity. The app sends only sparse/scanned PDFs to the `prebuilt-read` model, up to the configured OCR page limit.
+This provisions Document Intelligence and assigns Cognitive Services User to the App Service identity. Data Reader alone does not permit submitting analysis operations. The app sends only sparse/scanned PDFs to the `prebuilt-read` model, up to the configured OCR page limit.
 
 Disable OCR to avoid the resource and usage charges:
 
@@ -551,7 +599,7 @@ Invoke-WebRequest "$webUrl/health/ready"
 Expected result: HTTP 200 and `Healthy`.
 
 - `/health/live` verifies the process can answer HTTP requests.
-- `/health/ready` verifies the primary configured persistence provider is reachable.
+- `/health/ready` verifies the primary configured persistence provider and workspace records are reachable.
 - The optional Cosmos summary container is treated as an optimization and does not make readiness fail when aggregate fallback remains available.
 
 ### Test the user workflow
@@ -763,7 +811,7 @@ This can remove the resource group, Key Vault, App Service, telemetry, OCR, stor
 | Role-assignment deployment fails | Deployer lacks `Microsoft.Authorization/roleAssignments/write` | Use Owner/User Access Administrator or have an administrator create the assignments. |
 | Key Vault reference is unresolved | Managed-identity assignment has not propagated or secret name is wrong | Wait for RBAC propagation, verify Key Vault Secrets User, then restart App Service. |
 | App starts but Foundry calls return 401/403 | Foundry project role is missing | Run the emitted Foundry role-assignment command at the project scope. |
-| OCR returns 401/403 | Document Intelligence role or endpoint is wrong | Verify Cognitive Services Data Reader and the custom-subdomain endpoint. |
+| OCR returns 401/403 | Document Intelligence role or endpoint is wrong | Verify Cognitive Services User and the custom-subdomain endpoint. |
 | `/health/ready` is unhealthy with SQLite | `/home` is not writable or database initialization failed | Inspect App Service logs and storage settings; verify one-instance SQLite use. |
 | `/health/ready` is unhealthy with Azure SQL | Managed identity, firewall, DNS, or contained user is missing | Validate SQL Entra auth, firewall/private endpoint, and database roles. |
 | `/health/ready` is unhealthy with Cosmos | Endpoint, data-plane RBAC, or aggregate container is missing | Verify endpoint, `/id` partition key, and Built-in Data Contributor assignment. |

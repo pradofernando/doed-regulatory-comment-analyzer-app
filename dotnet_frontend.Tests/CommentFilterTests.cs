@@ -94,6 +94,13 @@ public class CommentFilterTests
     }
 
     [Fact]
+    public void Apply_SearchesAvailableCommentBody()
+    {
+        var comments = new[] { TestData.Comment("ED-1", comment: "Implementation requires accessible reporting.") };
+        Assert.Single(CommentFilter.Apply(comments, "ACCESSIBLE", CommentSortColumn.None, false));
+    }
+
+    [Fact]
     public void CommenterName_TrimsWhenOneSideMissing()
     {
         var a = new CommentAttributes { FirstName = "Solo", LastName = null };

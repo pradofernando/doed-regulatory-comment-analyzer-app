@@ -172,6 +172,61 @@ public class AnalysisJobManagerTests
         return services.BuildServiceProvider();
     }
 
+    [Fact]
+    public async Task PersistenceFailure_IsNotReportedAsACompletedSavedRun()
+    {
+        using var provider = BuildProvider(
+            new FakeRunner((_, _, _, _, _) => Task.FromResult(new AnalysisRun { Succeeded = true })),
+            new FakeRepository { SaveException = new InvalidOperationException("Cannot persist the run") });
+        using var manager = NewManager(provider);
+        var job = manager.Start("ED-1", [new CommentResource { Id = "COMMENT-1" }], new ApiSettings());
+        await job.Worker!;
+        Assert.Equal(AnalysisJobState.Failed, job.State);
+        Assert.Null(job.SavedRunId);
+        Assert.Contains("Cannot persist", job.Error);
+    }
+
+    [Fact]
+    public async Task Start_SnapshotsSettingsSelectionMetadataAndCommentBodies()
+    {
+        var runner = new MetadataRunner();
+        using var provider = BuildProvider(runner, new FakeRepository());
+        using var manager = NewManager(provider);
+        var settings = new ApiSettings { BatchSize = 3 };
+        var metadata = new AnalysisInputMetadata { FetchedComments = 20, AvailableComments = 100, IsSelection = true };
+        var comment = new CommentResource { Id = "COMMENT-1", Attributes = new CommentAttributes { Comment = "Original text" } };
+        var job = manager.Start("ED-1", [comment], settings, metadata);
+        settings.BatchSize = 25;
+        metadata.FetchedComments = 999;
+        comment.Attributes.Comment = "Changed after starting";
+        runner.AllowReading.SetResult();
+        await job.Worker!;
+        Assert.Equal(3, runner.BatchSize);
+        Assert.Equal(20, runner.FetchedComments);
+        Assert.Equal("Original text", runner.CommentText);
+        Assert.NotNull(job.Run?.PersistedId);
+    }
+
+    private sealed class MetadataRunner : IAnalysisRunner
+    {
+        public TaskCompletionSource AllowReading { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int BatchSize { get; private set; }
+        public int? FetchedComments { get; private set; }
+        public string? CommentText { get; private set; }
+        public Task<AnalysisRun> RunAsync(string documentId, IReadOnlyList<CommentResource> comments, ApiSettings settings,
+            IProgress<AnalysisProgress>? progress, CancellationToken cancellationToken) =>
+            RunAsync(documentId, comments, settings, progress, cancellationToken, null);
+        public async Task<AnalysisRun> RunAsync(string documentId, IReadOnlyList<CommentResource> comments, ApiSettings settings,
+            IProgress<AnalysisProgress>? progress, CancellationToken cancellationToken, AnalysisInputMetadata? inputMetadata)
+        {
+            await AllowReading.Task;
+            BatchSize = settings.BatchSize;
+            FetchedComments = inputMetadata?.FetchedComments;
+            CommentText = comments[0].Attributes.Comment;
+            return new AnalysisRun { DocumentId = documentId, Succeeded = true, TotalComments = comments.Count };
+        }
+    }
+
     private static AnalysisJobManager NewManager(ServiceProvider provider) =>
         new(
             provider.GetRequiredService<IServiceScopeFactory>(),
@@ -196,11 +251,13 @@ public class AnalysisJobManagerTests
         public Guid SavedId { get; } = Guid.NewGuid();
         public AnalysisRun? SavedRun { get; private set; }
         public bool CancelOnSave { get; init; }
+        public Exception? SaveException { get; init; }
         public TaskCompletionSource SaveStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource AllowSaveToContinue { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public async Task<Guid> SaveRunAsync(AnalysisRun run, CancellationToken ct = default)
         {
+            if (SaveException is not null) throw SaveException;
             SaveStarted.TrySetResult();
             if (CancelOnSave)
             {

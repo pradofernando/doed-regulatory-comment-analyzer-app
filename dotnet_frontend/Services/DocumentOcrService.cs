@@ -9,6 +9,11 @@ public interface IDocumentOcrService
 {
     bool IsConfigured { get; }
     Task<string> ExtractPdfTextAsync(byte[] pdfContent, int maxPages, CancellationToken ct = default);
+    async Task<IReadOnlyList<ExtractedPage>> ExtractPdfPagesAsync(byte[] content, int maxPages, CancellationToken ct = default)
+    {
+        var text = await ExtractPdfTextAsync(content, maxPages, ct);
+        return string.IsNullOrWhiteSpace(text) ? [] : [new ExtractedPage(null, text)];
+    }
 }
 
 public sealed class AzureDocumentOcrService : IDocumentOcrService
@@ -30,7 +35,11 @@ public sealed class AzureDocumentOcrService : IDocumentOcrService
     public async Task<string> ExtractPdfTextAsync(
         byte[] pdfContent,
         int maxPages,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        string.Join("\n", (await ExtractPdfPagesAsync(pdfContent, maxPages, ct)).Select(p => p.Text));
+
+    public async Task<IReadOnlyList<ExtractedPage>> ExtractPdfPagesAsync(
+        byte[] pdfContent, int maxPages, CancellationToken ct = default)
     {
         if (_client is null)
             throw new InvalidOperationException("Document Intelligence OCR is not configured.");
@@ -45,6 +54,7 @@ public sealed class AzureDocumentOcrService : IDocumentOcrService
             WaitUntil.Completed,
             options,
             ct).ConfigureAwait(false);
-        return operation.Value.Content?.Trim() ?? string.Empty;
+        return operation.Value.Pages.Select(page => new ExtractedPage(
+            page.PageNumber, string.Join("\n", page.Lines.Select(line => line.Content)))).ToList();
     }
 }

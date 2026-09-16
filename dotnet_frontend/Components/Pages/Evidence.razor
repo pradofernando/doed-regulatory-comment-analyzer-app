@@ -1,0 +1,172 @@
+@page "/evidence/{RunId:guid}"
+@rendermode InteractiveServer
+@inject ReviewService Reviews
+@inject ILogger<Evidence> Logger
+
+<PageTitle>Source evidence</PageTitle>
+<header class="page-header">
+    <span class="section-eyebrow">Verify the analysis</span>
+    <h1>Source evidence</h1>
+    <p>Compare the interpretation with the exact text captured during the analysis, without fetching a newer version of the comment.</p>
+    <a href="@($"analysis?runId={RunId:D}")">Back to this analysis</a>
+</header>
+
+@if (_loading)
+{
+    <p role="status">Loading saved evidence...</p>
+}
+else if (_error is not null)
+{
+    <div class="alert alert-danger" role="alert">@_error</div>
+}
+else if (_workspace is { } workspace)
+{
+    @if (!string.IsNullOrWhiteSpace(Finding))
+    {
+        <section class="surface-card mb-3">
+            <h2 class="h5">Finding being checked</h2>
+            <p>@Finding</p>
+            <p class="small mb-0">A matching quotation verifies the source text, not the correctness of the interpretation. Human review is still needed.</p>
+        </section>
+    }
+    @if (_entries.Count == 0)
+    {
+        <div class="alert alert-warning">
+            No verified source passage is available for this selection. Older runs may not include saved sources;
+            an unsupported citation or finding is not evidence. Nothing has been reconstructed or invented.
+        </div>
+    }
+    @foreach (var entry in _entries.Take(_visible))
+    {
+        var source = entry.Source;
+        var passage = entry.Passage;
+        var cat = workspace.Effective.Categorizations.FirstOrDefault(c => c.CommentId == source.CommentId);
+        var original = workspace.Original.Categorizations.FirstOrDefault(c => c.CommentId == source.CommentId);
+        var quotation = SourceEvidence.GetEvidence(workspace.Effective, source.CommentId, Finding)
+            .FirstOrDefault(e => e.Passage.Id == passage.Id);
+        <article class="surface-card evidence-card mb-3" id="@passage.Id">
+            <div class="evidence-interpretation">
+                <h2 class="h5">Submission #@source.SubmissionNumber</h2>
+                <p><code>@source.CommentId</code></p>
+                <p class="small">@source.Organization @source.Commenter</p>
+                @if (cat is not null)
+                {
+                    <dl>
+                        <dt>Current theme</dt><dd>@AnalystEngine.GetField(cat, "primary_theme", "primary_topic", "topic")</dd>
+                        <dt>Stance</dt><dd>@AnalystEngine.GetField(cat, "stance", "position")</dd>
+                        <dt>Primary reason</dt><dd>@AnalystEngine.GetField(cat, "canonical_reason")</dd>
+                        <dt>Interpretation</dt><dd>@AnalystEngine.GetField(cat, "comment_summary", "rationale")</dd>
+                    </dl>
+                }
+                @if (original is not null)
+                {
+                    <details>
+                        <summary>Original AI classification</summary>
+                        <pre class="source-text small">@WorkspaceJson.Write(original.Parsed)</pre>
+                    </details>
+                }
+                <a href="@($"analysis?runId={RunId:D}#workbench")" class="btn btn-sm btn-outline-primary mt-2">Review or correct</a>
+            </div>
+            <div>
+                <h3 class="h6">@passage.Title</h3>
+                <div class="small mb-2">
+                    <code>@passage.Id</code> &middot; @passage.Kind &middot;
+                    @(passage.PageNumber.HasValue ? $"Page {passage.PageNumber}" : passage.Kind == "inline" ? "Inline comment" : "Page number unavailable")
+                    @if (SourceUrl(passage) is { } sourceUrl)
+                    {
+                        <a class="ms-2" href="@sourceUrl" target="_blank" rel="noopener noreferrer">Open original attachment</a>
+                    }
+                </div>
+                <div class="source-text">
+                    @if (quotation is not null)
+                    {
+                        @passage.Text[..quotation.Start]<mark>@quotation.Quote</mark>@passage.Text[(quotation.Start + quotation.Quote.Length)..]
+                    }
+                    else
+                    {
+                        @passage.Text
+                    }
+                </div>
+                <p class="small text-muted mt-2">
+                    @(quotation is null ? "Saved source passage; no exact supporting quotation was verified here." : "Highlighted quotation is an exact match in this saved passage.")
+                    @(passage.Truncated ? "This passage was truncated by the capture limit." : "")
+                </p>
+                @if (source.Warnings.Count > 0)
+                {
+                    <ul class="small text-warning-emphasis">
+                        @foreach (var warning in source.Warnings)
+                        {
+                            <li>@warning</li>
+                        }
+                    </ul>
+                }
+                <details class="small">
+                    <summary>Snapshot metadata</summary>
+                    <p class="mt-2">Posted: @source.PostedAt?.ToString("u")<br />Modified: @source.ModifiedAt?.ToString("u")<br />Source status: @source.ExtractionStatus</p>
+                    <p class="hash">SHA-256: @source.ContentHash</p>
+                </details>
+            </div>
+        </article>
+    }
+    @if (_entries.Count > _visible)
+    {
+        <button class="btn btn-outline-primary" @onclick="() => _visible += 20">Show 20 more passages (@(_entries.Count - _visible) remaining)</button>
+    }
+}
+
+@code {
+    [Parameter] public Guid RunId { get; set; }
+    [SupplyParameterFromQuery(Name = "sourceId")] public string? SourceId { get; set; }
+    [SupplyParameterFromQuery(Name = "commentId")] public string? CommentId { get; set; }
+    [SupplyParameterFromQuery(Name = "finding")] public string? Finding { get; set; }
+    private AnalysisWorkspace? _workspace;
+    private List<(CommentSourceSnapshot Source, SourcePassage Passage)> _entries = new();
+    private bool _loading;
+    private string? _error;
+    private int _visible = 20;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _error = null;
+        _visible = 20;
+        try
+        {
+            _workspace = await Reviews.OpenAsync(RunId);
+            _workspace.Effective.PersistedId = RunId;
+            if (!string.IsNullOrWhiteSpace(SourceId))
+            {
+                var resolved = SourceEvidence.Resolve(_workspace.Effective, SourceId);
+                _entries = resolved.HasValue ? [resolved.Value] : new();
+            }
+            else if (!string.IsNullOrWhiteSpace(Finding))
+            {
+                _entries = SourceEvidence.GetEvidence(_workspace.Effective, CommentId, Finding)
+                    .Select(e => (e.Source, e.Passage)).DistinctBy(e => e.Passage.Id).ToList();
+            }
+            else
+            {
+                _entries = _workspace.Effective.Sources
+                    .Where(s => string.IsNullOrWhiteSpace(CommentId) || s.CommentId.Equals(CommentId, StringComparison.OrdinalIgnoreCase))
+                    .SelectMany(s => s.Passages.Select(p => (s, p))).ToList();
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException
+            or HttpRequestException or Microsoft.Azure.Cosmos.CosmosException or Azure.RequestFailedException
+            or Microsoft.EntityFrameworkCore.DbUpdateException)
+        {
+            Logger.LogWarning(ex, "Could not open saved evidence for {RunId}", RunId);
+            _error = ex.Message;
+        }
+        finally { _loading = false; }
+    }
+
+    private static string? SourceUrl(SourcePassage passage)
+    {
+        if (!Uri.TryCreate(passage.Url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo))
+            return null;
+        if (passage.PageNumber is > 0)
+            return new UriBuilder(uri) { Fragment = $"page={passage.PageNumber}" }.Uri.AbsoluteUri;
+        return uri.AbsoluteUri;
+    }
+}

@@ -176,6 +176,8 @@ def build_analysis_document(
         "categorizations": categorizations,
         "themeGroups": theme_groups,
         "followUpHistory": [],
+        "sources": result.get("sources", []),
+        "provenance": result.get("provenance"),
     }
 
 
@@ -216,15 +218,18 @@ def build_summary_document(document: Mapping[str, Any]) -> Dict[str, Any]:
 
 def serialize_categorization_payload(document: Mapping[str, Any]) -> bytes:
     payload = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "categorizations": [
             {
                 "submissionNumber": item["submissionNumber"],
                 "rawResponse": item["rawResponse"],
                 "parsedJson": item["parsedJson"],
+                "rowData": item.get("rowData", ""),
             }
             for item in document.get("categorizations", [])
         ],
+        "sources": document.get("sources", []),
+        "provenance": document.get("provenance"),
     }
     return gzip.compress(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
@@ -237,7 +242,7 @@ def _map_categorization(item: Mapping[str, Any]) -> Dict[str, Any]:
     raw_response = str(item.get("raw_response") or "")
     if not raw_response:
         raw_response = parsed if isinstance(parsed, str) else json.dumps(parsed, ensure_ascii=False)
-    parsed_json = _parse_categorization_json(raw_response) if isinstance(parsed, str) else raw_response
+    parsed_json = _parse_categorization_json(raw_response) if isinstance(parsed, str) else json.dumps(parsed, ensure_ascii=False)
     return {
         "submissionNumber": int(item.get("submission_number", 0)),
         "commentId": str(item.get("comment_id", "")),
@@ -245,6 +250,7 @@ def _map_categorization(item: Mapping[str, Any]) -> Dict[str, Any]:
         "parsedJson": parsed_json,
         "textSource": str(item.get("text_source", "inline")),
         "attachmentsExtracted": int(item.get("attachments_extracted", 0)),
+        "rowData": str(item.get("row_data") or ""),
     }
 
 
@@ -268,6 +274,7 @@ def _map_theme_group(item: Mapping[str, Any], position: int) -> Dict[str, Any]:
         "submissionNumbers": item.get("submission_numbers", []),
         "stanceDistribution": item.get("stance_distribution", {}),
         "commonArguments": item.get("common_arguments", []),
+        "evidence": item.get("evidence", []),
     }
 
 
@@ -346,9 +353,10 @@ class CosmosRunStore:
         self._summaries.upsert_item(build_summary_document(stored_document))
 
     def _offload_payload_if_needed(self, document: Dict[str, Any]) -> None:
-        payload_size = sum(
+        payload_size = len(json.dumps(document.get("sources", []), ensure_ascii=False).encode("utf-8")) + sum(
             len(item.get("rawResponse", "").encode("utf-8"))
             + len(item.get("parsedJson", "").encode("utf-8"))
+            + len(item.get("rowData", "").encode("utf-8"))
             for item in document["categorizations"]
         )
         if payload_size < self._payload_offload_threshold_bytes:
@@ -372,6 +380,8 @@ class CosmosRunStore:
         for item in document["categorizations"]:
             item["rawResponse"] = ""
             item["parsedJson"] = "{}"
+            item["rowData"] = ""
+        document["sources"] = []
         document["payloadBlobName"] = blob_name
 
     def get(self, run_id: str) -> Optional[Dict[str, Any]]:

@@ -19,7 +19,12 @@ contract evaluation.
 | `/comments` | Form to fetch comments by document or docket ID; shows them in a table. |
 | `/comments/{id}` | Single comment detail with full text + attachment links. |
 | `/analysis` | Run categorization/grouping agents, watch progress, inspect themes, export reports, and ask follow-up questions. |
+| `/analysis?runId=<id>` | Open a saved run with its latest human revisions, issue matrix, similar submissions, saved views, and coverage panel. |
+| `/evidence/{runId}` | Inspect captured passages side by side with the current interpretation; optional source, comment, and finding filters. |
 | `/library` | Page through, rename, reopen, and delete saved analysis runs. |
+| `/watchlists` | Follow dockets, manage deadlines, and check for new or modified submissions. |
+| `/notifications` | Read the persistent shared in-app inbox. |
+| `/compare` | Compare two saved runs with source, scope, and configuration warnings. |
 | `/settings` | Override the API base URL, API key, and default document ID. Persists to `App_Data/api-settings.json`. |
 
 ## Runtime flow
@@ -31,6 +36,21 @@ contract evaluation.
 5. `IAnalysisRepository` persists the result through SQLite, Azure SQL, or Cosmos DB.
 6. The Library reopens saved runs; the optional follow-up agent continues a Responses API chain.
 7. `OperationalTelemetry` reports bounded metrics without recording prompts, model responses, comment bodies, attachment contents, or API keys.
+8. Source snapshots and configuration provenance are saved alongside each new run; large Cosmos source payloads use the existing private Blob offload.
+9. `ReviewService` retains the original run and appends version-checked human revisions in `IWorkspaceRepository`. `AnalystEngine` derives the effective report and handles search and similar-text comparisons.
+10. The optional .NET docket monitor uses the same workspace repository for watches, baselines, leases, and persistent notifications. Automatic model analysis of changes is a per-watch opt-in, not the default.
+
+For a complete, non-technical introduction and implementation map, read the
+[Analyst guide](../docs/ANALYST_GUIDE.md).
+
+## Analyst workspace configuration
+
+- SQLite and Azure SQL use additive initialization for source/provenance fields and a workspace-record table. Existing analysis data is preserved.
+- Cosmos uses `Workspace:ContainerName` (default `analyst-workspace`) with partition key `/id`. The Bicep deployment provisions this container; existing external deployments need it as well.
+- Large source snapshots are included in payload offload. Legacy categorization-only payloads remain readable; old runs with no snapshots display unknown coverage rather than invented evidence.
+- Set `Monitoring:Enabled=true` to run periodic docket checks. It defaults to false locally. `Monitoring:PollIntervalMinutes` defaults to 60.
+- Watchlists, notifications, saved views, and review records are shared. Version checks prevent lost updates but do not authenticate reviewer labels.
+- Captured source text and model output are rendered as text, not executable HTML. A citation is clickable only when it resolves to a saved source in the same run.
 
 ## Configure the default API
 
@@ -215,7 +235,8 @@ $env:Telemetry__FoundryCost__OutputUsdPerMillionTokens = "10.00"
 - `/health/ready` checks primary persistence connectivity and is used by App Service health checks.
 
 The optional Cosmos summary container is an optimization: readiness validates the authoritative
-aggregate container, while Library operations fall back when the summary container is absent.
+aggregate container and required analyst-workspace storage, while Library operations fall back
+when the summary container is absent.
 
 Custom metric names:
 

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>DoED Regulatory Comment Analyzer</title>
+  <rect width="64" height="64" rx="14" fill="#142744"/>
+  <path d="M16 10h23l9 9v28a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V14a4 4 0 0 1 4-4Z" fill="#fff"/>
+  <path d="M39 10v10h9" fill="#b6d8e5"/>
+  <path d="M21 24h15M21 31h15M21 38h9" fill="none" stroke="#142744" stroke-width="4" stroke-linecap="round"/>
+  <path d="M40 34h13a6 6 0 0 1 6 6v6a6 6 0 0 1-6 6h-7l-8 6v-8a6 6 0 0 1-4-6v-4a6 6 0 0 1 6-6Z" fill="#0d9488" stroke="#142744" stroke-width="2"/>
+  <path d="m40 43 4 4 8-8" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

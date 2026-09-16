@@ -70,7 +70,7 @@ param followUpAgentName string = ''
 param followUpAgentVersion string = 'latest'
 
 @description('Foundry model deployment name backing the agents (informational only — the prompt agent picks its own model in the portal).')
-param modelDeploymentName string = 'gpt-5.4'
+param modelDeploymentName string = 'gpt-5.5'
 
 @description('Default Regulations.gov document ID the UI pre-fills.')
 param defaultDocumentId string = 'ED-2025-SCC-0481-0001'
@@ -118,6 +118,22 @@ param cosmosAccountName string = ''
 
 @description('Cosmos summary container partitioned by normalized document ID.')
 param cosmosSummaryContainerName string = 'analysis-run-summaries'
+
+@description('Workspace container for reviews, watchlists, saved views, and persistent notifications; partition /id.')
+param workspaceContainerName string = 'analyst-workspace'
+
+@description('Resource group containing an existing Cosmos account. Defaults to this deployment resource group.')
+param cosmosResourceGroupName string = resourceGroup().name
+
+@description('Enable periodic docket checks in the always-on web app.')
+param enableDocketMonitoring bool = true
+
+@minValue(1)
+@maxValue(1440)
+param monitoringIntervalMinutes int = 60
+
+@description('Optional client IPv4/IPv6 CIDRs allowed to reach the web app. Empty preserves public access.')
+param allowedClientNetworks array = []
 
 @description('Provision private Blob Storage for oversized analysis payloads.')
 param enablePayloadStorage bool = false
@@ -250,7 +266,14 @@ resource webApp 'Microsoft.Web/sites@2024-04-01' = {
     httpsOnly: true
     siteConfig: {
       linuxFxVersion: 'DOTNETCORE|9.0'
-      alwaysOn: appServicePlanSku != 'B1'
+      alwaysOn: true
+      ipSecurityRestrictionsDefaultAction: empty(allowedClientNetworks) ? 'Allow' : 'Deny'
+      ipSecurityRestrictions: [for (cidr, index) in allowedClientNetworks: {
+        name: 'allowed-client-${index}'
+        ipAddress: cidr
+        action: 'Allow'
+        priority: 100 + index
+      }]
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       http20Enabled: true
@@ -335,13 +358,13 @@ resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2024-10-01' 
   }
 }
 
-var cognitiveServicesDataReaderRoleId = 'b59867f0-fa02-499b-be73-45a86b5b3e1c'
+var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
 
 resource documentIntelligenceRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableAttachmentOcr) {
   scope: documentIntelligence
-  name: guid(documentIntelligence.id, webApp.id, cognitiveServicesDataReaderRoleId)
+  name: guid(documentIntelligence.id, webApp.id, cognitiveServicesUserRoleId)
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesDataReaderRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesUserRoleId)
     principalId: webApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
@@ -498,6 +521,17 @@ resource cosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAss
     roleDefinitionId: '${cosmosAccount.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
     scope: cosmosAccount.id
   }
+
+}
+
+module analystWorkspace 'workspace-container.bicep' = if (persistenceProvider == 'Cosmos' && (provisionCosmosResources || !empty(cosmosAccountName))) {
+  scope: resourceGroup(provisionCosmosResources ? resourceGroup().name : cosmosResourceGroupName)
+  params: {
+    accountName: provisionCosmosResources ? provisionedCosmosAccountName : cosmosAccountName
+    databaseName: cosmosDatabaseName
+    containerName: workspaceContainerName
+  }
+  dependsOn: [cosmosDatabase]
 }
 
 // Key Vault Secrets User role (RBAC-mode KV) for the App Service managed identity.
@@ -545,6 +579,10 @@ resource webAppSettings 'Microsoft.Web/sites/config@2024-04-01' = {
     Persistence__Cosmos__DatabaseName: cosmosDatabaseName
     Persistence__Cosmos__ContainerName: cosmosContainerName
     Persistence__Cosmos__SummaryContainerName: cosmosSummaryContainerName
+    Workspace__ContainerName: workspaceContainerName
+    Monitoring__Enabled: string(enableDocketMonitoring)
+    Monitoring__PollIntervalMinutes: string(monitoringIntervalMinutes)
+    Monitoring__MaxAutoAnalysisComments: '100'
     Persistence__Cosmos__CreateIfNotExists: string(cosmosCreateIfNotExists)
     Persistence__Payloads__BlobContainerUri: payloadContainerUri
     Persistence__Payloads__ContainerName: payloadContainerName
@@ -589,6 +627,7 @@ resource webAppSettings 'Microsoft.Web/sites/config@2024-04-01' = {
     cosmosDataContributor
     cosmosRunContainer
     cosmosSummaryContainer
+    analystWorkspace
   ]
 }
 

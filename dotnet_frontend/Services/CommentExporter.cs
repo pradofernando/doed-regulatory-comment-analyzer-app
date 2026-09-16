@@ -55,7 +55,7 @@ public static class CommentExporter
         return sb.ToString();
     }
 
-    private static string Esc(string? value)
+    internal static string Esc(string? value)
     {
         if (string.IsNullOrEmpty(value)) return string.Empty;
         var needsQuoting = value.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;

@@ -14,7 +14,16 @@ public static class AnalysisDatabaseInitializer
 
         if (database.Database.IsSqlite())
         {
-            await EnsureSqliteSessionNameColumnAsync(database, cancellationToken);
+            await EnsureSqliteColumnsAsync(database, cancellationToken);
+            await database.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "WorkspaceDocuments" (
+                    "Kind" TEXT COLLATE BINARY NOT NULL,
+                    "Id" TEXT COLLATE BINARY NOT NULL,
+                    "Json" TEXT NOT NULL,
+                    "Version" TEXT COLLATE BINARY NOT NULL,
+                    CONSTRAINT "PK_WorkspaceDocuments" PRIMARY KEY ("Kind", "Id")
+                );
+                """, cancellationToken);
         }
         else if (database.Database.IsSqlServer())
         {
@@ -23,11 +32,39 @@ public static class AnalysisDatabaseInitializer
                 BEGIN
                     ALTER TABLE [Runs] ADD [SessionName] nvarchar(160) NULL;
                 END
+                IF COL_LENGTH(N'Runs', N'SourcesJson') IS NULL
+                BEGIN
+                    ALTER TABLE [Runs] ADD [SourcesJson] nvarchar(max) NOT NULL DEFAULT N'[]';
+                END
+                IF COL_LENGTH(N'Runs', N'ProvenanceJson') IS NULL
+                BEGIN
+                    ALTER TABLE [Runs] ADD [ProvenanceJson] nvarchar(max) NULL;
+                END
+                IF OBJECT_ID(N'Categorizations', N'U') IS NOT NULL
+                   AND COL_LENGTH(N'Categorizations', N'RowData') IS NULL
+                BEGIN
+                    ALTER TABLE [Categorizations] ADD [RowData] nvarchar(max) NOT NULL DEFAULT N'';
+                END
+                IF OBJECT_ID(N'ThemeGroups', N'U') IS NOT NULL
+                   AND COL_LENGTH(N'ThemeGroups', N'EvidenceJson') IS NULL
+                BEGIN
+                    ALTER TABLE [ThemeGroups] ADD [EvidenceJson] nvarchar(max) NOT NULL DEFAULT N'[]';
+                END
+                IF OBJECT_ID(N'WorkspaceDocuments', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE [WorkspaceDocuments] (
+                        [Kind] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                        [Id] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                        [Json] nvarchar(max) NOT NULL,
+                        [Version] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                        CONSTRAINT [PK_WorkspaceDocuments] PRIMARY KEY ([Kind], [Id])
+                    );
+                END
                 """, cancellationToken);
         }
     }
 
-    private static async Task EnsureSqliteSessionNameColumnAsync(
+    private static async Task EnsureSqliteColumnsAsync(
         AnalysisDbContext database,
         CancellationToken cancellationToken)
     {
@@ -40,15 +77,29 @@ public static class AnalysisDatabaseInitializer
 
         try
         {
-            await using var command = connection.CreateCommand();
-            command.CommandText =
-                "SELECT COUNT(*) FROM pragma_table_info('Runs') WHERE name = 'SessionName';";
-            var exists = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) > 0;
-            if (!exists)
+            var additions = new[]
             {
-                await database.Database.ExecuteSqlRawAsync(
-                    "ALTER TABLE \"Runs\" ADD COLUMN \"SessionName\" TEXT NULL;",
-                    cancellationToken);
+                ("Runs", "SessionName", "TEXT NULL"),
+                ("Runs", "SourcesJson", "TEXT NOT NULL DEFAULT '[]'"),
+                ("Runs", "ProvenanceJson", "TEXT NULL"),
+                ("Categorizations", "RowData", "TEXT NOT NULL DEFAULT ''"),
+                ("ThemeGroups", "EvidenceJson", "TEXT NOT NULL DEFAULT '[]'"),
+            };
+            foreach (var (table, column, definition) in additions)
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    $"SELECT COUNT(*) FROM pragma_table_info('{table}');";
+                if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) == 0)
+                    continue;
+
+                command.CommandText =
+                    $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}';";
+                if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken)) == 0)
+                {
+                    command.CommandText = $"ALTER TABLE \"{table}\" ADD COLUMN \"{column}\" {definition};";
+                    await command.ExecuteNonQueryAsync(cancellationToken);
+                }
             }
         }
         finally

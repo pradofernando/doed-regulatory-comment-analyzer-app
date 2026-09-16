@@ -1,0 +1,86 @@
+@page "/watchlists"
+@rendermode InteractiveServer
+@inject DocketMonitorService Monitor
+@inject IJSRuntime JS
+@inject ILogger<Watchlists> Logger
+@inject Microsoft.Extensions.Options.IOptions<MonitoringOptions> Options
+
+<PageTitle>Docket watchlists</PageTitle>
+<h1>Docket watchlists</h1>
+<p>Follow new or modified submissions and keep deadline reminders in the shared <a href="notifications">notifications inbox</a>.</p>
+<p class="small text-muted">Automatic checks: @(Options.Value.Enabled ? $"every {Options.Value.PollIntervalMinutes} minutes while the app is running" : "disabled locally; Check now is available").
+    Automatic AI analysis is opt-in, up to @Options.Value.MaxAutoAnalysisComments pending comments per check. All watches are shared.</p>
+@if (_error is not null) { <div class="alert alert-danger" role="alert">@_error</div> }
+@if (_message is not null) { <p role="status">@_message</p> }
+<section class="surface-card mb-3">
+    <EditForm Model="_draft" OnValidSubmit="Save">
+        <fieldset disabled="@_busy">
+            <legend class="h5">@(_version is null ? "Add a docket watch" : "Edit watch")</legend>
+            <div class="row g-3">
+                <label class="col-md-4">Docket ID<InputText class="form-control" @bind-Value="_draft.DocketId" maxlength="64" disabled="@(_version is not null)" placeholder="ED-2025-SCC-0481" /></label>
+                <label class="col-md-4">Name<InputText class="form-control" @bind-Value="_draft.Name" maxlength="120" /></label>
+                <label class="col-md-4">Deadline (UTC, entered manually)<input type="datetime-local" class="form-control" @bind="_deadline" /></label>
+            </div>
+            <label class="d-block mt-3"><InputCheckbox @bind-Value="_draft.Enabled" /> Enable periodic checks</label>
+            <label class="d-block mt-2"><InputCheckbox @bind-Value="_draft.AutoAnalyze" /> Automatically analyze changed comments (uses model quota and may incur charges)</label>
+            <p class="small mt-2">The first check establishes a baseline; existing comments are not all treated as new. Deadlines must be verified against the official notice.</p>
+            <button class="btn btn-primary" type="submit">Save watch</button>
+            <button class="btn btn-outline-secondary ms-2" type="button" @onclick="NewWatch">Clear / new watch</button>
+        </fieldset>
+    </EditForm>
+</section>
+@if (_watches.Count == 0) { <p>No saved watches yet.</p> }
+@foreach (var item in _watches)
+{
+    <article class="surface-card mb-3">
+        <div class="d-flex justify-content-between flex-wrap gap-2"><h2 class="h5">@item.Watch.Name</h2><code>@item.Watch.DocketId</code></div>
+        <p class="small">@(item.Watch.Enabled ? "Enabled" : "Paused") &middot; Last successful check: @(item.Watch.LastCheckedAt?.ToString("u") ?? "Not checked")
+            &middot; Known submissions: @item.Watch.Baseline.Count &middot; Pending analysis: @item.Watch.PendingIds.Count</p>
+        @if (item.Watch.LastError is not null) { <p class="text-danger">@item.Watch.LastError</p> }
+        @if (item.Watch.DeadlineAt is { } deadline) { <p>Manually entered deadline: @deadline.ToString("u")</p> }
+        <button class="btn btn-sm btn-primary me-2" @onclick="() => Check(item.Watch.Id)" disabled="@_busy">Check now</button>
+        <button class="btn btn-sm btn-outline-secondary me-2" @onclick="() => Edit(item)" disabled="@_busy">Edit</button>
+        <button class="btn btn-sm btn-outline-danger me-2" @onclick="() => Delete(item)" disabled="@_busy">Delete</button>
+        @if (item.Watch.LastRunId is { } runId) { <a href="@($"analysis?runId={runId:D}")">Open latest change analysis</a> }
+    </article>
+}
+
+@code {
+    private IReadOnlyList<WatchItem> _watches = Array.Empty<WatchItem>();
+    private DocketWatch _draft = new();
+    private string? _version;
+    private DateTime? _deadline;
+    private bool _busy;
+    private string? _error;
+    private string? _message;
+    protected override Task OnInitializedAsync() => Execute(async () => _watches = await Monitor.ListAsync());
+    private void NewWatch() { _draft = new(); _version = null; _deadline = null; }
+    private void Edit(WatchItem item) { _draft = WorkspaceJson.Clone(item.Watch); _version = item.Version; _deadline = _draft.DeadlineAt?.UtcDateTime; }
+    private Task Save() => Execute(async () =>
+    {
+        _draft.DeadlineAt = _deadline.HasValue ? new DateTimeOffset(DateTime.SpecifyKind(_deadline.Value, DateTimeKind.Utc)) : null;
+        await Monitor.SaveAsync(_draft, _version);
+        NewWatch();
+        _watches = await Monitor.ListAsync();
+        _message = "Watch saved. Use Check now to establish or update the baseline.";
+    });
+    private Task Check(Guid id) => Execute(async () =>
+    {
+        try { await Monitor.CheckAsync(id); _message = "Check completed. See the notifications inbox for changes and reminders."; }
+        finally { _watches = await Monitor.ListAsync(); }
+    });
+    private Task Delete(WatchItem item) => Execute(async () =>
+    {
+        if (!await JS.InvokeAsync<bool>("confirm", "Delete this shared watch? Already-running analysis may still finish.")) return;
+        await Monitor.DeleteAsync(item.Watch.Id, item.Version);
+        _watches = await Monitor.ListAsync();
+        if (_draft.Id == item.Watch.Id) NewWatch();
+    });
+    private async Task Execute(Func<Task> action)
+    {
+        _busy = true; _error = null; _message = null;
+        try { await action(); }
+        catch (Exception ex) when (DocketMonitorService.ExpectedFailure(ex)) { Logger.LogWarning(ex, "Watch action failed"); _error = ex.Message; }
+        finally { _busy = false; }
+    }
+}

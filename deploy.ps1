@@ -64,6 +64,24 @@ param(
     [string]$CosmosSummaryContainerName = "analysis-run-summaries",
 
     [Parameter(Mandatory=$false)]
+    [string]$WorkspaceContainerName = "analyst-workspace",
+
+    [Parameter(Mandatory=$false)]
+    [string[]]$AllowedClientNetworks = @(),
+
+    [Parameter(Mandatory=$false)]
+    [switch]$EnableMethodologySearch,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$EnableScheduledAnalysis,
+
+    [Parameter(Mandatory=$false)]
+    [string]$MethodologySearchConnectionId = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$MethodologySearchIndexName = "",
+
+    [Parameter(Mandatory=$false)]
     [string]$CosmosAccountName = "",
 
     [Parameter(Mandatory=$false)]
@@ -89,6 +107,18 @@ param(
 
     [Parameter(Mandatory=$false)]
     [int]$GptCapacity = 10,
+
+    [Parameter(Mandatory=$false)]
+    [string]$AgentModelName = "gpt-5.5",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AgentModelVersion = "2026-04-24",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AgentModelSku = "GlobalStandard",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AgentPythonExecutable = "",
 
     [Parameter(Mandatory=$false)]
     [int]$EmbeddingCapacity = 10,
@@ -126,6 +156,10 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
     $PSNativeCommandUseErrorActionPreference = $false
 }
 $env:AZURE_CORE_ONLY_SHOW_ERRORS = 'true'
+
+if ([string]::IsNullOrWhiteSpace($MethodologySearchConnectionId) -ne [string]::IsNullOrWhiteSpace($MethodologySearchIndexName)) {
+    throw "Methodology retrieval requires both MethodologySearchConnectionId and MethodologySearchIndexName."
+}
 
 if ([string]::IsNullOrWhiteSpace($FrontendResourceGroupName)) {
     $FrontendResourceGroupName = $ResourceGroupName
@@ -282,7 +316,6 @@ function Resolve-ExistingCosmosAccount {
 
 Assert-CommandAvailable -Name 'az'
 Assert-CommandAvailable -Name 'dotnet'
-Assert-CommandAvailable -Name 'tar'
 
 $accountJson = az account show 2>$null
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accountJson)) {
@@ -324,6 +357,9 @@ if (-not $SkipFunctionDeployment) {
         '-DocumentId', $DocumentId,
         '-BatchSize', [string]$BatchSize,
         '-GptCapacity', [string]$GptCapacity,
+        '-AgentModelName', $AgentModelName,
+        '-AgentModelVersion', $AgentModelVersion,
+        '-AgentModelSku', $AgentModelSku,
         '-EmbeddingCapacity', [string]$EmbeddingCapacity,
         '-AgentDeploymentOutputPath', $agentDeploymentOutputPath
     )
@@ -339,6 +375,17 @@ if (-not $SkipFunctionDeployment) {
     }
     if ($UsePremium) {
         $functionArgs += '-UsePremium'
+    }
+    if ($EnableMethodologySearch) { $functionArgs += '-EnableMethodologySearch' }
+    if ($EnableScheduledAnalysis) { $functionArgs += '-EnableScheduledAnalysis' }
+    if (-not [string]::IsNullOrWhiteSpace($AgentPythonExecutable)) {
+        $functionArgs += @('-AgentPythonExecutable', $AgentPythonExecutable)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($MethodologySearchConnectionId)) {
+        $functionArgs += @('-MethodologySearchConnectionId', $MethodologySearchConnectionId)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($MethodologySearchIndexName)) {
+        $functionArgs += @('-MethodologySearchIndexName', $MethodologySearchIndexName)
     }
     if ($IncludeTags) {
         $functionArgs += @('-IncludeTags', '-DeploymentTagName', $DeploymentTagName, '-DeploymentTagValue', $DeploymentTagValue)
@@ -412,7 +459,7 @@ $validationAgentName = Get-OptionalSetting -Settings $functionSettings -Name 'VA
 $validationAgentVersion = Get-OptionalSetting -Settings $functionSettings -Name 'VALIDATION_AGENT_VERSION' -Default 'latest'
 $deployedFollowUpAgentName = Get-OptionalSetting -Settings $functionSettings -Name 'FOLLOWUP_AGENT_NAME'
 $deployedFollowUpAgentVersion = Get-OptionalSetting -Settings $functionSettings -Name 'FOLLOWUP_AGENT_VERSION' -Default 'latest'
-$modelDeploymentName = Get-OptionalSetting -Settings $functionSettings -Name 'CATEGORIZATION_AGENT_MODEL' -Default 'gpt-4o'
+$modelDeploymentName = Get-RequiredSetting -Settings $functionSettings -Name 'CATEGORIZATION_AGENT_MODEL'
 $functionStorageAccountName = Get-RequiredSetting -Settings $functionSettings -Name 'AZURE_STORAGE_ACCOUNT_NAME'
 $functionAppUrl = "https://$functionAppName.azurewebsites.net"
 $useFunctionAnalysisBackend = $PersistenceProvider -eq 'Cosmos'
@@ -522,6 +569,9 @@ try {
             cosmosDatabaseName = @{ value = $CosmosDatabaseName }
             cosmosContainerName = @{ value = $CosmosContainerName }
             cosmosSummaryContainerName = @{ value = $CosmosSummaryContainerName }
+            workspaceContainerName = @{ value = $WorkspaceContainerName }
+            cosmosResourceGroupName = @{ value = $CosmosResourceGroupName }
+            allowedClientNetworks = @{ value = $AllowedClientNetworks }
             cosmosAccountName = @{ value = $CosmosAccountName }
             tags = @{ value = if ($IncludeTags) { @{ workload = 'doed-regulatory-comments-web'; managedBy = 'bicep'; $DeploymentTagName = $DeploymentTagValue } } else { @{ workload = 'doed-regulatory-comments-web'; managedBy = 'bicep' } } }
             cosmosCreateIfNotExists = @{ value = $CosmosCreateIfNotExists.IsPresent }
@@ -609,9 +659,10 @@ if ($useFunctionAnalysisBackend) {
         $existingCosmosRole = az cosmosdb sql role assignment list `
         --account-name $CosmosAccountName `
         --resource-group $CosmosResourceGroupName `
-        --query "[?principalId=='$principalId'].id | [0]" `
+        --query "[?principalId=='$principalId' && roleDefinitionId=='$cosmosContributorRoleId' && scope=='$cosmosAccountId'].id | [0]" `
         -o tsv `
         --only-show-errors
+        if ($LASTEXITCODE -ne 0) { throw "Failed to check existing Cosmos data-plane role assignments." }
         if ([string]::IsNullOrWhiteSpace($existingCosmosRole)) {
             Invoke-NativeChecked -Command 'az' -Arguments @(
                 'cosmosdb', 'sql', 'role', 'assignment', 'create',
@@ -726,7 +777,7 @@ if (-not $SkipFrontendPublish) {
         if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
         }
-        Invoke-NativeChecked -Command 'tar' -Arguments @('-a', '-c', '-f', $zipPath, '-C', $publishDir, '.') -FailureMessage "Failed to create frontend deployment package."
+        Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
 
         Invoke-NativeChecked -Command 'az' -Arguments @(
             'webapp', 'deploy',

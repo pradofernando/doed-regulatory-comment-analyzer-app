@@ -4,6 +4,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin\**;obj\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -26,9 +27,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Local-only override written by the Settings page. Shipping it would leak the API key and shadow the Key Vault-backed app settings. -->
-    <Content Remove="App_Data\api-settings.json" />
-    <None Include="App_Data\api-settings.json" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
+    <!-- Local databases, settings and deployment state must never enter a runtime package. -->
+    <Content Remove="App_Data\**;infra\**;.azure\**;appsettings.Development.json" />
+    <None Update="App_Data\**;infra\**;.azure\**;appsettings.Development.json" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
   </ItemGroup>
 
 </Project>

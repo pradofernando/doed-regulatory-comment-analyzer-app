@@ -82,6 +82,8 @@ public sealed class AttachmentExtractor
             var pageCount = 0;
             var pagesProcessed = 0;
             var truncated = false;
+            var pages = new List<ExtractedPage>();
+            string? extractionError = null;
             try
             {
                 if (download.FileKind == AttachmentFileKind.Pdf)
@@ -95,23 +97,38 @@ public sealed class AttachmentExtractor
                     pageCount = pdf.PageCount;
                     pagesProcessed = pdf.PagesProcessed;
                     truncated = pdf.Truncated;
+                    pages.AddRange(pdf.Pages);
 
                     if (pdf.NeedsOcr && _ocr.IsConfigured)
                     {
                         var ocrPageLimit = Math.Min(
                             Math.Min(_options.MaxPdfPages, _options.MaxOcrPages),
                             Math.Max(1, pdf.PageCount));
-                        var ocrText = await _ocr.ExtractPdfTextAsync(
+                        var ocrPages = await _ocr.ExtractPdfPagesAsync(
                             download.Content,
                             ocrPageLimit,
                             ct).ConfigureAwait(false);
+                        var ocrText = string.Join("\n", ocrPages.Select(p => p.Text));
                         if (!string.IsNullOrWhiteSpace(ocrText))
                         {
                             text = LimitText(ocrText, _options.MaxExtractedTextCharacters, out var ocrTruncated);
+                            pages.Clear();
+                            var remaining = _options.MaxExtractedTextCharacters;
+                            foreach (var page in ocrPages)
+                            {
+                                var length = Math.Min(remaining, page.Text.Length);
+                                if (length > 0) pages.Add(new(page.PageNumber, page.Text[..length]));
+                                remaining -= length;
+                            }
                             usedOcr = true;
                             pagesProcessed = ocrPageLimit;
                             truncated |= ocrTruncated;
                             _telemetry.RecordAttachmentOcr(succeeded: true);
+                        }
+                        if (pdf.NeedsOcr && !usedOcr)
+                        {
+                            truncated = true;
+                            extractionError = "Some PDF pages had little or no readable text; OCR did not recover them.";
                         }
                         else
                         {
@@ -129,6 +146,7 @@ public sealed class AttachmentExtractor
             {
                 _telemetry.RecordAttachmentFailure("extraction_failed", format);
                 _logger.LogWarning(ex, "Attachment text extraction failed for {Title} ({Format})", title, format);
+                extractionError = "Attachment text extraction failed.";
             }
 
             if (string.IsNullOrWhiteSpace(text))
@@ -148,6 +166,9 @@ public sealed class AttachmentExtractor
                 PageCount = pageCount,
                 PagesProcessed = pagesProcessed,
                 Truncated = truncated,
+                Url = first.FileUrl,
+                Pages = pages,
+                Error = extractionError,
             });
             combined.Append("\n\n--- Attachment: ").Append(title).Append(" ---\n\n").Append(text!.Trim());
         }
@@ -171,6 +192,7 @@ public sealed class AttachmentExtractor
         var pagesProcessed = 0;
         var sparsePageFound = false;
         var textTruncated = false;
+        var extractedPages = new List<ExtractedPage>();
         foreach (var page in pdf.GetPages().Take(pagesToProcess))
         {
             var t = page.Text;
@@ -187,10 +209,12 @@ public sealed class AttachmentExtractor
             if (t.Length > remaining)
             {
                 sb.Append(t.AsSpan(0, remaining));
+                extractedPages.Add(new(page.Number, t[..remaining]));
                 textTruncated = true;
                 break;
             }
             sb.AppendLine(t);
+            extractedPages.Add(new(page.Number, t));
         }
         var text = sb.ToString().Trim();
         return new PdfTextExtraction(
@@ -198,7 +222,8 @@ public sealed class AttachmentExtractor
             pageCount,
             pagesProcessed,
             pageCount > pagesProcessed || textTruncated,
-            sparsePageFound || ShouldUseOcr(text, pagesProcessed, minTextCharactersPerPage));
+            sparsePageFound || ShouldUseOcr(text, pagesProcessed, minTextCharactersPerPage),
+            extractedPages);
     }
 
     internal static bool ShouldUseOcr(string? text, int pagesProcessed, int minTextCharactersPerPage)
@@ -258,6 +283,8 @@ public class AttachmentExtractionResult
 
 public class AttachmentText
 {
+    public string? Url { get; set; }
+    public List<ExtractedPage> Pages { get; set; } = new();
     public string Title { get; set; } = string.Empty;
     public string Format { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;
@@ -274,4 +301,5 @@ internal sealed record PdfTextExtraction(
     int PageCount,
     int PagesProcessed,
     bool Truncated,
-    bool NeedsOcr);
+    bool NeedsOcr,
+    IReadOnlyList<ExtractedPage> Pages);

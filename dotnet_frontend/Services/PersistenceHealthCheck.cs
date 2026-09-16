@@ -39,6 +39,8 @@ public sealed class PersistenceHealthCheck : IHealthCheck
                 if (!await database.Database.CanConnectAsync(cancellationToken).ConfigureAwait(false))
                     return HealthCheckResult.Unhealthy("Analysis database rejected the connectivity check.");
             }
+            var workspace = scope.ServiceProvider.GetRequiredService<IWorkspaceRepository>();
+            await workspace.GetAsync("reviews", Guid.Empty.ToString("D"), cancellationToken).ConfigureAwait(false);
             return HealthCheckResult.Healthy("Analysis persistence is reachable.");
         }
         catch (Exception ex)

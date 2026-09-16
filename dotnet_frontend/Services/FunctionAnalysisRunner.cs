@@ -32,12 +32,21 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
         _options = options.Value;
     }
 
+    public Task<AnalysisRun> RunAsync(
+        string documentId,
+        IReadOnlyList<CommentResource> comments,
+        ApiSettings settings,
+        IProgress<AnalysisProgress>? progress,
+        CancellationToken cancellationToken) =>
+        RunAsync(documentId, comments, settings, progress, cancellationToken, null);
+
     public async Task<AnalysisRun> RunAsync(
         string documentId,
         IReadOnlyList<CommentResource> comments,
         ApiSettings settings,
         IProgress<AnalysisProgress>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AnalysisInputMetadata? inputMetadata)
     {
         if (comments.Count == 0)
             throw new InvalidOperationException("No comments were selected for analysis.");
@@ -65,6 +74,12 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
                     validation = settings.ModelDeploymentName,
                 },
                 runValidation = settings.RunValidation,
+                inputMetadata = inputMetadata ?? new AnalysisInputMetadata
+                {
+                    FetchedComments = comments.Count,
+                    IsSelection = true,
+                    Description = "Selected IDs; total docket coverage was not supplied.",
+                },
             }),
         };
         AddFunctionKey(submitRequest);
@@ -182,7 +197,7 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
             Content = JsonContent.Create(new
             {
                 conversationId = run.FollowUpThreadId,
-                analysisContext = FoundryAnalysisService.BuildFollowUpPriming(run, includeAcknowledgement: false),
+                analysisContext = FoundryAnalysisService.BuildFollowUpPriming(run, includeAcknowledgement: false, question: question),
                 question = question.Trim(),
                 history = run.FollowUpHistory.Select(turn => new
                 {

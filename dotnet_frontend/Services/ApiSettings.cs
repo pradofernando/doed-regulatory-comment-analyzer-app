@@ -27,7 +27,7 @@ public class ApiSettings
     public const string DefaultAgentVersion = "latest";
 
     /// <summary>Foundry model deployment name (informational only — the prompt agent's own configured model is used at call time).</summary>
-    public const string DefaultModelDeploymentName = "gpt-5.4";
+    public const string DefaultModelDeploymentName = "gpt-5.5";
 
     /// <summary>Default comments-per-batch sent to the grouping agent.</summary>
     public const int DefaultBatchSize = 5;

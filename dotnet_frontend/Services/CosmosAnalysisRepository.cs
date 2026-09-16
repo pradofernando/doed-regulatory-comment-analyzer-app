@@ -42,6 +42,7 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
     private const string SummaryBackfillMarkerId = "analysis-run-summary-backfill-v2";
     private const string SystemPartitionKey = "__system__";
     private const int CurrentSchemaVersion = 2;
+    internal const int MaxInlineDocumentBytes = 1_800_000;
     private const int MaxConcurrencyAttempts = 3;
     private static readonly SemaphoreSlim SummaryBackfillGate = new(1, 1);
 
@@ -83,6 +84,7 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
         try
         {
             payloadBlobName = await OffloadPayloadIfNeededAsync(id, document, ct).ConfigureAwait(false);
+            EnsureDocumentFits(document);
             var response = await _container.CreateItemAsync(
                 document,
                 new PartitionKey(document.Id),
@@ -416,10 +418,14 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
         Patterns = run.Grouped.Patterns.ToList(),
         Recommendations = run.Grouped.Recommendations.ToList(),
         FollowUpThreadId = run.FollowUpThreadId,
+        Sources = WorkspaceJson.Clone(run.Sources),
+        SourceCount = run.Sources.Count,
+        Provenance = run.Provenance is null ? null : WorkspaceJson.Clone(run.Provenance),
         Categorizations = run.Categorizations.Select(item => new CategorizationDocument
         {
             SubmissionNumber = item.SubmissionNumber,
             CommentId = item.CommentId,
+            RowData = item.RowData,
             RawResponse = item.RawResponse,
             ParsedJson = System.Text.Json.JsonSerializer.Serialize(item.Parsed, JsonOptions),
             TextSource = item.TextSource,
@@ -434,6 +440,7 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
             SubmissionNumbers = item.SubmissionNumbers.ToList(),
             StanceDistribution = new Dictionary<string, int>(item.StanceDistribution),
             CommonArguments = item.CommonArguments.ToList(),
+            Evidence = WorkspaceJson.Clone(item.Evidence),
         }).ToList(),
         FollowUpHistory = run.FollowUpHistory.Select((item, index) => new FollowUpTurnDocument
         {
@@ -452,6 +459,7 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
 
         var run = new AnalysisRun
         {
+            PersistedId = Guid.TryParse(document.Id, out var persistedId) ? persistedId : null,
             SessionName = document.SessionName,
             DocumentId = document.DocumentId,
             StartedAt = document.StartedAt,
@@ -461,6 +469,8 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
             Succeeded = document.Succeeded,
             ErrorMessage = document.ErrorMessage,
             FollowUpThreadId = document.FollowUpThreadId,
+            Sources = document.Sources ?? new(),
+            Provenance = document.Provenance,
             Grouped = new GroupedAnalysis
             {
                 OverallSummary = document.OverallSummary,
@@ -477,6 +487,7 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
             {
                 SubmissionNumber = item.SubmissionNumber,
                 CommentId = item.CommentId,
+                RowData = item.RowData,
                 RawResponse = item.RawResponse,
                 Parsed = DeserializeCategorization(item),
                 TextSource = item.TextSource,
@@ -493,6 +504,7 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
                 SubmissionNumbers = item.SubmissionNumbers,
                 StanceDistribution = item.StanceDistribution,
                 CommonArguments = item.CommonArguments,
+                Evidence = item.Evidence,
             }));
 
         run.FollowUpHistory.AddRange(document.FollowUpHistory
@@ -505,7 +517,24 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
     {
         var document = ToDocument(Guid.NewGuid(), run);
         if (schemaVersion.HasValue) document.SchemaVersion = schemaVersion.Value;
+        return DeserializeForTesting(JsonConvert.SerializeObject(document));
+    }
+
+    internal static AnalysisRun DeserializeForTesting(string json, AnalysisRunPayload? payload = null)
+    {
+        var document = JsonConvert.DeserializeObject<AnalysisRunDocument>(json)
+            ?? throw new InvalidOperationException("The analysis document contains no data.");
+        if (payload is not null) ApplyPayload(document, payload);
         return ToAnalysisRun(document);
+    }
+
+    internal async Task<string> PrepareDocumentForTestingAsync(AnalysisRun run)
+    {
+        var id = Guid.NewGuid();
+        var document = ToDocument(id, run);
+        await OffloadPayloadIfNeededAsync(id, document, CancellationToken.None).ConfigureAwait(false);
+        EnsureDocumentFits(document);
+        return JsonConvert.SerializeObject(document);
     }
 
     internal static string NormalizeDocumentIdForTesting(string? documentId) =>
@@ -734,36 +763,42 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
         AnalysisRunDocument document,
         CancellationToken ct)
     {
-        var payloadBytes = document.Categorizations.Sum(item =>
-            Encoding.UTF8.GetByteCount(item.RawResponse)
-            + Encoding.UTF8.GetByteCount(item.ParsedJson));
-        if (payloadBytes < _payloadOptions.OffloadThresholdBytes)
+        var documentBytes = DocumentSize(document);
+        var threshold = Math.Clamp(_payloadOptions.OffloadThresholdBytes, 1, MaxInlineDocumentBytes);
+        if (documentBytes < threshold)
             return null;
 
         if (!_payloadStore.IsConfigured)
         {
             _logger.LogWarning(
-                "Cosmos run {RunId} contains {PayloadBytes} bytes of inline AI payload; configure Persistence:Payloads to offload large content.",
+                "Cosmos run {RunId} contains {PayloadBytes} bytes of inline analysis and source content; configure Persistence:Payloads to offload large content.",
                 runId,
-                payloadBytes);
+                documentBytes);
             return null;
         }
 
         var payload = new AnalysisRunPayload
         {
+            SchemaVersion = AnalysisRunPayload.CurrentSchemaVersion,
             Categorizations = document.Categorizations
                 .Select(item => new CategorizationPayload(
                     item.SubmissionNumber,
                     item.RawResponse,
-                    item.ParsedJson))
+                    item.ParsedJson,
+                    item.RowData))
                 .ToList(),
+            Sources = document.Sources,
+            Provenance = document.Provenance,
         };
         var blobName = await _payloadStore.SaveAsync(runId, payload, ct).ConfigureAwait(false);
         foreach (var categorization in document.Categorizations)
         {
             categorization.RawResponse = string.Empty;
             categorization.ParsedJson = "{}";
+            categorization.RowData = string.Empty;
         }
+        document.SourcesOffloaded = document.Sources.Count > 0;
+        document.Sources = new();
         document.PayloadBlobName = blobName;
         return blobName;
     }
@@ -778,7 +813,12 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
         var payload = await _payloadStore.LoadAsync(document.PayloadBlobName, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException(
                 $"The Blob payload for analysis run {document.Id} could not be found.");
-        if (payload.SchemaVersion > 1)
+        ApplyPayload(document, payload);
+    }
+
+    private static void ApplyPayload(AnalysisRunDocument document, AnalysisRunPayload payload)
+    {
+        if (payload.SchemaVersion < 1 || payload.SchemaVersion > AnalysisRunPayload.CurrentSchemaVersion)
             throw new NotSupportedException(
                 $"Analysis payload schema version {payload.SchemaVersion} is not supported.");
 
@@ -790,7 +830,25 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
                     $"Blob payload for run {document.Id} is missing submission {categorization.SubmissionNumber}.");
             categorization.RawResponse = stored.RawResponse;
             categorization.ParsedJson = stored.ParsedJson;
+            if (stored.RowData is not null) categorization.RowData = stored.RowData;
         }
+        if (document.SourcesOffloaded && (payload.Sources is null || payload.Sources.Count == 0
+            || (document.SourceCount.HasValue && payload.Sources.Count != document.SourceCount.Value)))
+            throw new InvalidOperationException($"Blob payload for run {document.Id} is missing saved source evidence.");
+        if (payload.Sources is { Count: > 0 })
+            document.Sources = payload.Sources;
+        if (payload.Provenance is not null)
+            document.Provenance = payload.Provenance;
+    }
+
+    private static int DocumentSize(AnalysisRunDocument document) =>
+        Encoding.UTF8.GetByteCount(JsonConvert.SerializeObject(document));
+
+    private static void EnsureDocumentFits(AnalysisRunDocument document)
+    {
+        if (DocumentSize(document) > MaxInlineDocumentBytes)
+            throw new InvalidOperationException(
+                "This analysis run is too large for a Cosmos DB item. Configure Persistence:Payloads Blob Storage for source and AI payload offload, or use AzureSql. No source evidence was discarded.");
     }
 
     private async Task TryDeletePayloadAsync(string? blobName, CancellationToken ct)
@@ -873,6 +931,10 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
         [JsonProperty("recommendations")] public List<string> Recommendations { get; set; } = new();
         [JsonProperty("followUpThreadId")] public string? FollowUpThreadId { get; set; }
         [JsonProperty("payloadBlobName")] public string? PayloadBlobName { get; set; }
+        [JsonProperty("sources")] public List<CommentSourceSnapshot> Sources { get; set; } = new();
+        [JsonProperty("sourceCount")] public int? SourceCount { get; set; }
+        [JsonProperty("sourcesOffloaded")] public bool SourcesOffloaded { get; set; }
+        [JsonProperty("provenance")] public AnalysisProvenance? Provenance { get; set; }
         [JsonProperty("categorizations")] public List<CategorizationDocument> Categorizations { get; set; } = new();
         [JsonProperty("themeGroups")] public List<ThemeGroupDocument> ThemeGroups { get; set; } = new();
         [JsonProperty("followUpHistory")] public List<FollowUpTurnDocument> FollowUpHistory { get; set; } = new();
@@ -882,6 +944,7 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
     {
         [JsonProperty("submissionNumber")] public int SubmissionNumber { get; set; }
         [JsonProperty("commentId")] public string CommentId { get; set; } = string.Empty;
+        [JsonProperty("rowData")] public string RowData { get; set; } = string.Empty;
         [JsonProperty("rawResponse")] public string RawResponse { get; set; } = string.Empty;
         [JsonProperty("parsedJson")] public string ParsedJson { get; set; } = "{}";
         [JsonProperty("textSource")] public string TextSource { get; set; } = "inline";
@@ -897,6 +960,7 @@ public sealed class CosmosAnalysisRepository : IAnalysisRepository
         [JsonProperty("submissionNumbers")] public List<int> SubmissionNumbers { get; set; } = new();
         [JsonProperty("stanceDistribution")] public Dictionary<string, int> StanceDistribution { get; set; } = new();
         [JsonProperty("commonArguments")] public List<string> CommonArguments { get; set; } = new();
+        [JsonProperty("evidence")] public List<FindingEvidence> Evidence { get; set; } = new();
     }
 
     private sealed class FollowUpTurnDocument

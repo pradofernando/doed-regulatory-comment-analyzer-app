@@ -21,12 +21,17 @@ public sealed class AnalysisPayloadOptions
 public sealed record CategorizationPayload(
     int SubmissionNumber,
     string RawResponse,
-    string ParsedJson);
+    string ParsedJson,
+    string? RowData = null);
 
 public sealed class AnalysisRunPayload
 {
+    public const int CurrentSchemaVersion = 2;
+
     public int SchemaVersion { get; init; } = 1;
     public List<CategorizationPayload> Categorizations { get; init; } = new();
+    public List<CommentSourceSnapshot> Sources { get; init; } = new();
+    public AnalysisProvenance? Provenance { get; init; }
 }
 
 public interface IAnalysisPayloadStore
@@ -116,6 +121,8 @@ internal static class AnalysisPayloadCodec
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
     public static byte[] Serialize(AnalysisRunPayload payload)
@@ -132,6 +139,9 @@ internal static class AnalysisPayloadCodec
     {
         using var input = new MemoryStream(content, writable: false);
         using var gzip = new GZipStream(input, CompressionMode.Decompress);
-        return JsonSerializer.Deserialize<AnalysisRunPayload>(gzip, JsonOptions);
+        var payload = JsonSerializer.Deserialize<AnalysisRunPayload>(gzip, JsonOptions);
+        if (payload is not null && (payload.SchemaVersion < 1 || payload.SchemaVersion > AnalysisRunPayload.CurrentSchemaVersion))
+            throw new NotSupportedException($"Analysis payload schema version {payload.SchemaVersion} is not supported.");
+        return payload;
     }
 }

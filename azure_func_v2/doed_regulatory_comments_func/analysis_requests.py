@@ -10,7 +10,7 @@ MAX_COMMENTS = 1000
 
 _DOCUMENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _MODEL_KEYS = ("categorization", "grouping", "validation")
-_REQUEST_KEYS = {"documentId", "commentIds", "maxComments", "batchSize", "models", "runValidation"}
+_REQUEST_KEYS = {"documentId", "commentIds", "maxComments", "batchSize", "models", "runValidation", "inputMetadata"}
 
 
 class AnalysisRequestValidationError(ValueError):
@@ -90,6 +90,24 @@ def create_analysis_request(
     run_validation = payload.get("runValidation", bool(default_models.get("validation")))
     if not isinstance(run_validation, bool):
         raise AnalysisRequestValidationError("runValidation must be true or false.")
+    input_metadata = payload.get("inputMetadata")
+    if input_metadata is not None:
+        keys = {"fetchedComments", "availableComments", "isSelection", "useDocketFilter", "description"}
+        if not isinstance(input_metadata, Mapping) or set(input_metadata) - keys:
+            raise AnalysisRequestValidationError("inputMetadata contains unsupported fields.")
+        fetched = _validate_optional_int(input_metadata.get("fetchedComments"), "inputMetadata.fetchedComments", minimum=0, maximum=10000000, allow_none=False)
+        available = _validate_optional_int(input_metadata.get("availableComments"), "inputMetadata.availableComments", minimum=0, maximum=10000000, allow_none=True)
+        for field in ("isSelection", "useDocketFilter"):
+            if not isinstance(input_metadata.get(field, False if field == "isSelection" else True), bool):
+                raise AnalysisRequestValidationError(f"inputMetadata.{field} must be true or false.")
+        description = input_metadata.get("description", "")
+        if not isinstance(description, str) or len(description) > 1000:
+            raise AnalysisRequestValidationError("inputMetadata.description must be text up to 1000 characters.")
+        input_metadata = {
+            "fetchedComments": fetched, "availableComments": available,
+            "isSelection": input_metadata.get("isSelection", False),
+            "useDocketFilter": input_metadata.get("useDocketFilter", True), "description": description,
+        }
 
     timestamp = requested_at or datetime.datetime.now(datetime.timezone.utc)
     if timestamp.tzinfo is None:
@@ -106,6 +124,7 @@ def create_analysis_request(
         "batchSize": batch_size,
         "models": models,
         "runValidation": run_validation,
+        "inputMetadata": input_metadata,
     }
 
 

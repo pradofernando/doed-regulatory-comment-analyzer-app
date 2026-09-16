@@ -121,7 +121,7 @@
             <div class="comments-filter mb-2">
                 <div class="comments-filter__search">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.7"/><path d="m20 20-3-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-                    <input type="search" class="form-control form-control-sm" placeholder="Filter by commenter, organization, title, or ID…"
+                    <input type="search" class="form-control form-control-sm" placeholder="Filter by commenter, organization, title, ID, or available body..."
                            aria-label="Filter comments"
                            value="@_filterText" @oninput="OnFilterInput" />
                     @if (!string.IsNullOrEmpty(_filterText))
@@ -133,6 +133,7 @@
                     Showing <strong>@DisplayComments.Count</strong> of @_result.Comments.Count
                 </span>
             </div>
+            <p class="small text-muted">After analysis, use <strong>Review and search</strong> on the Analysis page for captured attachment text, themes, dates, review status, and saved views.</p>
             <div class="selection-toolbar d-flex flex-wrap gap-2 align-items-center mb-2">
                 <div class="me-2"><strong>@Analysis.SelectedCount</strong> of @_result.Comments.Count selected
                     @if (_result.TotalElements is int total) { <span class="text-muted">· @total total in docket</span> }
@@ -416,6 +417,16 @@
         Analysis.Comments = Analysis.SelectedCount > 0
             ? Analysis.SelectedComments.Values.ToList()
             : _result.Comments;
+        Analysis.InputMetadata = new AnalysisInputMetadata
+        {
+            FetchedComments = _result.Comments.Count,
+            AvailableComments = _result.TotalElements,
+            IsSelection = Analysis.SelectedCount > 0 && Analysis.SelectedCount < _result.Comments.Count,
+            UseDocketFilter = _request.UseDocketFilter,
+            Description = Analysis.SelectedCount > 0
+                ? "Manually selected submissions from the fetched results."
+                : "All fetched submissions.",
+        };
         Analysis.LastRun = null;
         Analysis.IsRunning = false;
         Analysis.LastProgress = null;

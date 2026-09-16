@@ -3,6 +3,11 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Xunit;
+using DoedRegulatoryComments.Web.Data;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace DoedRegulatoryComments.Web.Tests;
 
@@ -39,13 +44,20 @@ public sealed class HealthWebApplicationFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<IDbContextFactory<AnalysisDbContext>>();
+            services.RemoveAll<DbContextOptions<AnalysisDbContext>>();
+            services.RemoveAll<IDbContextOptionsConfiguration<AnalysisDbContext>>();
+            services.AddDbContextFactory<AnalysisDbContext>(options => options.UseSqlite($"Data Source={_databasePath};Pooling=False"));
+        });
         builder.ConfigureAppConfiguration((_, configuration) =>
         {
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["APPLICATIONINSIGHTS_CONNECTION_STRING"] = string.Empty,
                 ["Persistence:Provider"] = "Sqlite",
-                ["ConnectionStrings:AnalysisDb"] = $"Data Source={_databasePath}",
+                ["ConnectionStrings:AnalysisDb"] = $"Data Source={_databasePath};Pooling=False",
                 ["Persistence:Payloads:CreateIfNotExists"] = "false",
                 ["Attachments:OcrEndpoint"] = string.Empty,
             });

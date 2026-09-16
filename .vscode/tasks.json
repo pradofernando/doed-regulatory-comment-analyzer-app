@@ -28,6 +28,52 @@
 			"options": {
 				"cwd": "${workspaceFolder}/azure_func_v2\\doed_regulatory_comments_func"
 			}
+		},
+		{
+			"label": "Build regulatory analyzer (Release)",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"build",
+				"${workspaceFolder}\\dotnet_frontend.Tests\\DoedRegulatoryComments.Web.Tests.csproj",
+				"--configuration",
+				"Release",
+				"--no-restore",
+				"--nologo"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Run regulatory analyzer (isolated local preview)",
+			"type": "shell",
+			"command": "dotnet",
+			"args": [
+				"run",
+				"--project",
+				"${workspaceFolder}\\dotnet_frontend\\DoedRegulatoryComments.Web.csproj",
+				"--configuration",
+				"Release",
+				"--no-build",
+				"--launch-profile",
+				"http",
+				"--",
+				"--urls",
+				"http://127.0.0.1:5307",
+				"--contentRoot",
+				"${workspaceFolder}\\dotnet_frontend\\App_Data\\local-preview",
+				"--Persistence:Provider",
+				"Sqlite",
+				"--AnalysisBackend:Enabled",
+				"false",
+				"--Monitoring:Enabled",
+				"false"
+			],
+			"isBackground": true,
+			"problemMatcher": []
 		}
 	]
 }

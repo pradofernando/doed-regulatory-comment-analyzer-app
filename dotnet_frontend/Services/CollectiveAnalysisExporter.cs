@@ -11,7 +11,7 @@ namespace DoedRegulatoryComments.Web.Services;
 /// </summary>
 public static class CollectiveAnalysisExporter
 {
-    public static byte[] BuildWord(AnalysisRun run)
+    public static byte[] BuildWord(AnalysisRun run, RunReviewState? reviewState = null)
     {
         using var ms = new MemoryStream();
         using (var doc = WordprocessingDocument.Create(ms, WordprocessingDocumentType.Document))
@@ -22,10 +22,12 @@ public static class CollectiveAnalysisExporter
 
             AddHeading(body, "Regulatory Comments — Collective Analysis", level: 1);
             AddPara(body, $"Document: {run.DocumentId}");
-            AddPara(body, $"Comments analyzed: {run.TotalComments}");
+            AddPara(body, $"Submissions included: {run.TotalComments}");
             AddPara(body, $"Started:  {run.StartedAt:yyyy-MM-dd HH:mm} UTC");
             AddPara(body, $"Finished: {run.CompletedAt:yyyy-MM-dd HH:mm} UTC");
             AddPara(body, $"Overall sentiment: {run.Grouped.OverallSentiment ?? "(none)"}");
+            AddHeading(body, "Coverage, provenance, and review status", level: 2);
+            AddPara(body, AnalystReportExporter.ContextText(run, reviewState));
 
             if (!string.IsNullOrWhiteSpace(run.Grouped.OverallSummary))
             {
@@ -71,7 +73,39 @@ public static class CollectiveAnalysisExporter
                     if (!string.IsNullOrWhiteSpace(c.Attributes.Title)) AddPara(body, $"Title: {c.Attributes.Title}");
                 }
                 AddPara(body, $"Text source: {cat.TextSource} · attachments extracted: {cat.AttachmentsExtracted}");
-                AddPara(body, cat.RawResponse);
+                AddPara(body, $"Current theme: {AnalystEngine.GetField(cat, "primary_theme", "primary_topic", "topic")}");
+                AddPara(body, $"Current primary reason: {AnalystEngine.GetField(cat, "canonical_reason")}");
+                AddPara(body, $"Current stance: {AnalystEngine.GetField(cat, "stance", "position")}");
+                AddPara(body, $"Current summary: {AnalystEngine.GetField(cat, "comment_summary", "rationale")}");
+                if (!string.IsNullOrWhiteSpace(cat.RawResponse))
+                {
+                    AddPara(body, "Original AI response (preserved, not a replacement for the current reviewed values):");
+                    AddPara(body, cat.RawResponse);
+                }
+            }
+            AddHeading(body, "Verified source quotations", level: 2);
+            AddPara(body, AnalystReportExporter.EvidenceText(run));
+            if (reviewState is not null)
+            {
+                AddHeading(body, "Issue response matrix - draft working material", level: 2);
+                foreach (var issue in reviewState.Issues)
+                {
+                    AddHeading(body, issue.Concern, level: 3);
+                    AddPara(body, $"Rule section: {(string.IsNullOrWhiteSpace(issue.RuleSection) ? "Not identified" : issue.RuleSection)}");
+                    AddPara(body, $"Supporting submissions: {string.Join(", ", issue.SubmissionNumbers)}");
+                    AddPara(body, $"Requested change: {issue.RequestedChange}");
+                    AddPara(body, $"Draft response (human review required): {issue.DraftResponse}");
+                    AddPara(body, $"Review status: {issue.ReviewStatus}; reviewer label: {issue.Reviewer}");
+                    AddPara(body, issue.Notes);
+                }
+                AddHeading(body, "Human revision history", level: 2);
+                foreach (var review in reviewState.Revisions)
+                {
+                    AddPara(body, $"{review.At:u} - {review.CommentId} - {review.Reviewer} - {review.Status}");
+                    AddPara(body, $"{review.PrimaryTheme}; {review.CanonicalReason}; {review.Stance}");
+                    AddPara(body, review.Summary);
+                    AddPara(body, review.Notes);
+                }
             }
 
             main.Document.Save();
@@ -79,7 +113,7 @@ public static class CollectiveAnalysisExporter
         return ms.ToArray();
     }
 
-    public static byte[] BuildExcel(AnalysisRun run)
+    public static byte[] BuildExcel(AnalysisRun run, RunReviewState? reviewState = null)
     {
         using var ms = new MemoryStream();
         using (var doc = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
@@ -92,7 +126,7 @@ public static class CollectiveAnalysisExporter
             AddSheet(wbPart, sheets, ref sheetId, "Summary", new[]
             {
                 new[] { "Document", run.DocumentId },
-                new[] { "Comments analyzed", run.TotalComments.ToString() },
+                new[] { "Submissions included", run.TotalComments.ToString() },
                 new[] { "Started (UTC)", run.StartedAt.ToString("yyyy-MM-dd HH:mm") },
                 new[] { "Finished (UTC)", run.CompletedAt?.ToString("yyyy-MM-dd HH:mm") ?? "" },
                 new[] { "Overall sentiment", run.Grouped.OverallSentiment ?? "" },
@@ -119,7 +153,7 @@ public static class CollectiveAnalysisExporter
 
             var catRows = new List<string[]>
             {
-                new[] { "#", "Comment ID", "Text source", "Attachments extracted", "Raw agent response" }
+                new[] { "#", "Comment ID", "Text source", "Attachments extracted", "Current theme", "Current primary reason", "Current stance", "Current summary", "Original AI response" }
             };
             foreach (var c in run.Categorizations)
             {
@@ -129,6 +163,10 @@ public static class CollectiveAnalysisExporter
                     c.CommentId,
                     c.TextSource,
                     c.AttachmentsExtracted.ToString(),
+                    AnalystEngine.GetField(c, "primary_theme", "primary_topic", "topic"),
+                    AnalystEngine.GetField(c, "canonical_reason"),
+                    AnalystEngine.GetField(c, "stance", "position"),
+                    AnalystEngine.GetField(c, "comment_summary", "rationale"),
                     c.RawResponse,
                 });
             }
@@ -138,6 +176,41 @@ public static class CollectiveAnalysisExporter
             foreach (var p in run.Grouped.Patterns) prRows.Add(new[] { "Pattern", p });
             foreach (var r in run.Grouped.Recommendations) prRows.Add(new[] { "Recommendation", r });
             AddSheet(wbPart, sheets, ref sheetId, "Patterns & recommendations", prRows);
+            AddSheet(wbPart, sheets, ref sheetId, "Coverage and provenance",
+                AnalystReportExporter.ContextText(run, reviewState).Split('\n').Select(line => new[] { line }));
+
+            var sourceRows = new List<string[]>
+            {
+                new[] { "Source ID", "Comment ID", "Kind", "Attachment / title", "Page", "URL", "Captured text", "Capture status", "Warnings", "Content SHA-256" },
+            };
+            foreach (var source in run.Sources)
+            {
+                foreach (var passage in source.Passages)
+                    sourceRows.Add([passage.Id, source.CommentId, passage.Kind, passage.Title,
+                        passage.PageNumber?.ToString() ?? "", passage.Url ?? "", passage.Text,
+                        source.ExtractionStatus, string.Join("; ", source.Warnings), source.ContentHash]);
+            }
+            AddSheet(wbPart, sheets, ref sheetId, "Captured sources", sourceRows);
+            var evidenceRows = new List<string[]> { new[] { "Source ID", "Comment ID", "Page", "Verified quote", "URL" } };
+            evidenceRows.AddRange(SourceEvidence.GetEvidence(run).Select(match => new[]
+            {
+                match.Passage.Id, match.Source.CommentId, AnalystReportExporter.PageLabel(match.Passage), match.Quote, match.Passage.Url ?? "",
+            }));
+            AddSheet(wbPart, sheets, ref sheetId, "Verified quotations", evidenceRows);
+            if (reviewState is not null)
+            {
+                AddSheet(wbPart, sheets, ref sheetId, "Issue response matrix", AnalystReportExporter.IssueRows(reviewState.Issues));
+                var revisionRows = new List<string[]>
+                {
+                    new[] { "UTC", "Comment ID", "Reviewer label", "Theme", "Primary reason", "Stance", "Summary", "Status", "Notes" },
+                };
+                revisionRows.AddRange(reviewState.Revisions.Select(review => new[]
+                {
+                    review.At.ToString("O"), review.CommentId, review.Reviewer, review.PrimaryTheme,
+                    review.CanonicalReason, review.Stance, review.Summary, review.Status, review.Notes,
+                }));
+                AddSheet(wbPart, sheets, ref sheetId, "Human revisions", revisionRows);
+            }
 
             wbPart.Workbook.Save();
         }
@@ -177,7 +250,7 @@ public static class CollectiveAnalysisExporter
 
     // ─── Excel helpers ──────────────────────────────────────────────────────
 
-    private static void AddSheet(WorkbookPart wbPart, Sheets sheets, ref uint sheetId, string name, IList<string[]> rows)
+    private static void AddSheet(WorkbookPart wbPart, Sheets sheets, ref uint sheetId, string name, IEnumerable<string[]> rows)
     {
         var wsPart = wbPart.AddNewPart<WorksheetPart>();
         var sheetData = new SheetData();

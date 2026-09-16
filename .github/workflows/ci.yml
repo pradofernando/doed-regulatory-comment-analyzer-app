@@ -77,3 +77,22 @@ jobs:
           inlineScript: |
             az bicep build --file dotnet_frontend/infra/main.bicep --outfile /tmp/main.json
             az bicep build-params --file dotnet_frontend/infra/main.bicepparam --outfile /tmp/main.parameters.json
+            az bicep build --file azure_func_v2/infra/main.bicep --outfile /tmp/function-main.json
+
+  function-contracts:
+    name: Function and agent deployment contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Restore declared dependencies
+        run: python -m pip install -r azure_func_v2/doed_regulatory_comments_func/requirements.txt -r azure_func_v2/infra/requirements-agent-creation.txt
+      - name: Verify Function contracts without cloud calls
+        working-directory: azure_func_v2/doed_regulatory_comments_func
+        run: python -m unittest test_comment_consolidation test_structured_responses test_source_evidence
+      - name: Verify agent definitions without cloud calls
+        working-directory: azure_func_v2/infra
+        run: python -m unittest test_create_foundry_agents test_deployment_contracts

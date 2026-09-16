@@ -16,6 +16,7 @@ security, and troubleshooting. This README is the quick reference for files in `
 | `main.bicep` | Resource definitions, application settings, role assignments, alerts, and outputs. |
 | `main.bicepparam` | azd/environment-variable mapping and deployment defaults. |
 | `main.json` | Generated ARM output when present; edit Bicep rather than this file. |
+| `workspace-container.bicep` | Versioned review/watch/view/inbox storage for new or explicitly named existing Cosmos accounts. |
 
 ## Resources
 
@@ -24,13 +25,13 @@ security, and troubleshooting. This README is the quick reference for files in `
 | Log Analytics workspace | Backing store for App Insights logs and metrics. |
 | Application Insights (workspace-based) | Telemetry for the web app. |
 | Key Vault (RBAC mode) | Stores the Regulations.gov API key and Foundry endpoint URL. Agent names/versions are non-secret app settings. |
-| App Service Plan (Linux B1) | Compute for the web app. Bump SKU in `main.bicepparam` if you need more memory or `alwaysOn`. |
+| App Service Plan (Linux B1) | Compute for the web app. Always-on is enabled for watchlist monitoring; larger SKUs add memory and CPU. |
 | App Service (Linux, .NET 9) | Hosts the Blazor Server app. Uses a system-assigned managed identity. |
 | Role assignments | Key Vault Secrets User plus conditional OCR, Blob, and provisioned-Cosmos data roles. |
 | `Microsoft.Web/sites/config` (appsettings) | Wires the app to Key Vault references and App Insights. Separate child resource so it deploys **after** the role assignment (avoids first-start race). |
 | Blob Storage *(optional, enabled by `main.bicepparam`)* | Stores gzip-compressed oversized Cosmos AI payloads. Shared-key access and public blobs are disabled. It is unused by SQLite/Azure SQL. |
 | Document Intelligence *(optional, enabled by `main.bicepparam`)* | OCR fallback for scanned PDFs using managed identity. |
-| Cosmos DB *(optional)* | Serverless aggregate and compact summary containers with explicit indexing policies. |
+| Cosmos DB *(optional)* | Serverless aggregate, compact summary and analyst-workspace containers with explicit indexing policies. |
 | Azure Monitor alerts | HTTP 5xx and sustained response-time alerts; notifications are attached when `ALERT_EMAIL` is set. |
 
 ## Choose a region
@@ -97,7 +98,7 @@ azd env set FOUNDRY_GROUPING_AGENT_NAME RegulatoryCommentGroupingAgent
 azd env set FOUNDRY_GROUPING_AGENT_VERSION latest
 azd env set FOUNDRY_FOLLOWUP_AGENT_NAME RegulatoryCommentFollowUpAgent      # optional — leave unset to disable
 azd env set FOUNDRY_FOLLOWUP_AGENT_VERSION latest
-azd env set FOUNDRY_MODEL_DEPLOYMENT gpt-5.4                                 # informational only — prompt agent picks its own model
+azd env set FOUNDRY_MODEL_DEPLOYMENT gpt-5.5                                 # must match the deployed prompt agent model
 azd env set ENABLE_ATTACHMENT_OCR true
 azd env set ENABLE_PAYLOAD_STORAGE true
 azd env set ALERT_EMAIL operations@example.gov                                # optional
@@ -106,7 +107,7 @@ azd package --no-prompt
 azd up
 ```
 
-Always set `FOUNDRY_PROJECT_ENDPOINT`; do not rely on the sample fallback in
+Always set `FOUNDRY_PROJECT_ENDPOINT`; there is no sample endpoint fallback in
 `main.bicepparam`. Treat `azd env get-values` output as secret because it includes
 the Regulations.gov key.
 

@@ -1,0 +1,43 @@
+@using System.Text.RegularExpressions
+@foreach (var part in Parts())
+{
+    @if (part.SourceId is { } sourceId && Run.PersistedId is { } id && SourceEvidence.Resolve(Run, sourceId) is not null)
+    {
+        <a href="@($"evidence/{id:D}?sourceId={Uri.EscapeDataString(sourceId)}")" class="badge bg-light text-primary border mx-1"
+           title="Open the saved source passage">Source @sourceId</a>
+    }
+    else if (part.Submission is { } number && Run.PersistedId is { } runId
+        && Run.Categorizations.FirstOrDefault(c => c.SubmissionNumber == number) is { } comment)
+    {
+        <a href="@($"evidence/{runId:D}?commentId={Uri.EscapeDataString(comment.CommentId)}")" title="Open this submission's saved sources">@part.Text</a>
+    }
+    else
+    {
+        <span>@part.Text</span>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public AnalysisRun Run { get; set; } = new();
+    [Parameter] public string Text { get; set; } = string.Empty;
+
+    private static readonly Regex CitationPattern = new(
+        @"\[source:(?<source>[A-Za-z0-9_-]+)\]|(?<![\w])#(?<submission>\d+)\b",
+        RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+
+    private IEnumerable<TextPart> Parts()
+    {
+        var cursor = 0;
+        foreach (Match match in CitationPattern.Matches(Text))
+        {
+            if (match.Index > cursor) yield return new(Text[cursor..match.Index], null, null);
+            yield return new(match.Value,
+                match.Groups["source"].Success ? match.Groups["source"].Value : null,
+                int.TryParse(match.Groups["submission"].Value, out var number) ? number : null);
+            cursor = match.Index + match.Length;
+        }
+        if (cursor < Text.Length) yield return new(Text[cursor..], null, null);
+    }
+
+    private sealed record TextPart(string Text, string? SourceId, int? Submission);
+}

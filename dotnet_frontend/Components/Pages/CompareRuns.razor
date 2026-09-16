@@ -1,0 +1,88 @@
+@page "/compare"
+@rendermode InteractiveServer
+@inject IAnalysisRepository Analyses
+@inject ReviewService Reviews
+@inject ILogger<CompareRuns> Logger
+
+<PageTitle>Compare analyses</PageTitle>
+<h1>Compare analyses</h1>
+<p>Compare saved snapshots and current human-reviewed classifications. Label changes can reflect review or analysis changes, not necessarily a new policy issue.</p>
+<section class="surface-card mb-3">
+    <div class="row g-3">
+        <label class="col-md-5">Before<select class="form-select" @bind="_beforeId"><option value="">Select a run</option>@foreach (var r in _runs) { <option value="@r.Id">@Label(r)</option> }</select></label>
+        <label class="col-md-5">After<select class="form-select" @bind="_afterId"><option value="">Select a run</option>@foreach (var r in _runs) { <option value="@r.Id">@Label(r)</option> }</select></label>
+        <div class="col-md-2 align-self-end"><button class="btn btn-primary" @onclick="Compare" disabled="@_busy">Compare</button></div>
+    </div>
+    @if (_token is not null) { <button class="btn btn-sm btn-link mt-2" @onclick="LoadMore" disabled="@_busy">Load more saved runs</button> }
+</section>
+@if (_error is not null) { <div class="alert alert-danger" role="alert">@_error</div> }
+@if (_comparison is { } comparison && _before is { } before && _after is { } after)
+{
+    <p><a href="@($"analysis?runId={before.PersistedId:D}")">Before: @before.DocumentId</a> (@before.TotalComments submissions)
+        &rarr; <a href="@($"analysis?runId={after.PersistedId:D}")">After: @after.DocumentId</a> (@after.TotalComments submissions)</p>
+    @if (comparison.Warnings.Count > 0)
+    {
+        <div class="alert alert-warning"><strong>Comparison limitations</strong><ul class="mb-0">@foreach (var warning in comparison.Warnings) { <li>@warning</li> }</ul></div>
+    }
+    <p class="small">@AnalysisCoverage.InterpretationNotice</p>
+    <div class="row g-3">
+        <div class="col-md-4"><strong>@comparison.OnlyAfter.Count</strong> only in after</div>
+        <div class="col-md-4"><strong>@comparison.OnlyBefore.Count</strong> only in before</div>
+        <div class="col-md-4"><strong>@comparison.ChangedSources.Count</strong> changed captured text</div>
+    </div>
+    @foreach (var comparisonSection in new[] { ("Theme labels / candidate emerging arguments", comparison.Themes), ("Stance", comparison.Stances) })
+    {
+        <h2 class="h5 mt-4">@comparisonSection.Item1</h2>
+        <table class="table table-sm"><thead><tr><th>Label</th><th>Before (n=@before.TotalComments)</th><th>After (n=@after.TotalComments)</th><th>Count change</th></tr></thead>
+            <tbody>@foreach (var row in comparisonSection.Item2) { <tr><td>@row.Label</td><td>@row.Before (@Share(row.Before, before.TotalComments))</td><td>@row.After (@Share(row.After, after.TotalComments))</td><td>@((row.After - row.Before).ToString("+0;-0;0"))</td></tr> }</tbody>
+        </table>
+    }
+    <details class="mt-3"><summary>Submission differences</summary>
+        <p>Only in before: @string.Join(", ", comparison.OnlyBefore)</p><p>Only in after: @string.Join(", ", comparison.OnlyAfter)</p>
+        @foreach (var id in comparison.ChangedSources) { <p>@id: <a href="@($"evidence/{before.PersistedId:D}?commentId={Uri.EscapeDataString(id)}")">Before source</a> / <a href="@($"evidence/{after.PersistedId:D}?commentId={Uri.EscapeDataString(id)}")">After source</a></p> }
+    </details>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "before")] public Guid? Before { get; set; }
+    [SupplyParameterFromQuery(Name = "after")] public Guid? After { get; set; }
+    private List<AnalysisRunSummary> _runs = new();
+    private string? _token;
+    private string _beforeId = "";
+    private string _afterId = "";
+    private bool _busy;
+    private string? _error;
+    private AnalysisRun? _before;
+    private AnalysisRun? _after;
+    private RunComparison? _comparison;
+    protected override async Task OnInitializedAsync() => await LoadMore();
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Before.HasValue) _beforeId = Before.Value.ToString();
+        if (After.HasValue) _afterId = After.Value.ToString();
+        if (Before.HasValue && After.HasValue) await Compare();
+    }
+    private Task LoadMore() => Execute(async () =>
+    {
+        var page = await Analyses.ListPageAsync(new AnalysisListFilter(SucceededOnly: true, Take: 100), _token);
+        _runs.AddRange(page.Items.Where(r => _runs.All(old => old.Id != r.Id)));
+        _token = page.ContinuationToken;
+    });
+    private Task Compare() => Execute(async () =>
+    {
+        if (!Guid.TryParse(_beforeId, out var before) || !Guid.TryParse(_afterId, out var after))
+            throw new ArgumentException("Choose both a before and an after run.");
+        _before = (await Reviews.OpenAsync(before)).Effective;
+        _after = (await Reviews.OpenAsync(after)).Effective;
+        _comparison = RunComparisonService.Compare(_before, _after);
+    });
+    private static string Label(AnalysisRunSummary r) => $"{r.SessionName ?? r.DocumentId} - {r.StartedAt:u} - {r.TotalComments} comments";
+    private static string Share(int count, int total) => total > 0 ? ((double)count / total).ToString("P1") : "n/a";
+    private async Task Execute(Func<Task> action)
+    {
+        _busy = true; _error = null;
+        try { await action(); }
+        catch (Exception ex) when (DocketMonitorService.ExpectedFailure(ex)) { Logger.LogWarning(ex, "Comparison failed"); _error = ex.Message; }
+        finally { _busy = false; }
+    }
+}
