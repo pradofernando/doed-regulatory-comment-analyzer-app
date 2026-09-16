@@ -354,7 +354,7 @@ function Invoke-AgentCreationWorkflow {
         [string]$DeploymentOutputPath = ""
     )
 
-    $agentPromptsPath = Resolve-Path (Join-Path $PSScriptRoot "..\AGENT_PROMPTS.md")
+    $agentPromptsPath = Resolve-Path (Join-Path $PSScriptRoot "../AGENT_PROMPTS.md")
     $agentDefinitions = @(
         [ordered]@{
             SectionName = 'CATEGORIZATION_AGENT'
@@ -398,10 +398,17 @@ function Invoke-AgentCreationWorkflow {
     Write-Host ""
     Write-Host "Foundry Project Endpoint: $AiEndpoint" -ForegroundColor Gray
 
-    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
-    $pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
-    if (-not (Test-Path $pythonExe)) {
-        $pythonExe = "python"
+    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "../..")
+    $pythonExe = @(
+        (Join-Path $repoRoot ".venv/Scripts/python.exe"),
+        (Join-Path $repoRoot ".venv/bin/python")
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($pythonExe)) {
+        $pythonCommand = Get-Command python3, python -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $pythonCommand) {
+            throw "Python 3 was not found. Install Python or activate a Python virtual environment before deploying."
+        }
+        $pythonExe = $pythonCommand.Source
     }
 
     $agentCreationRequirements = Join-Path $PSScriptRoot "requirements-agent-creation.txt"
@@ -427,7 +434,7 @@ function Invoke-AgentCreationWorkflow {
         }
     }
 
-    $definitionsFile = Join-Path $env:TEMP ("foundry-agent-definitions-{0}.json" -f ([guid]::NewGuid().ToString('N')))
+    $definitionsFile = Join-Path ([System.IO.Path]::GetTempPath()) ("foundry-agent-definitions-{0}.json" -f ([guid]::NewGuid().ToString('N')))
     $helperScript = Join-Path $PSScriptRoot "create_foundry_agents.py"
     $createdAgents = @{}
 
@@ -751,7 +758,7 @@ function New-FunctionZipPackage {
         [string]$FunctionAppDirectory
     )
 
-    $packageRoot = Join-Path $env:TEMP ("doed-function-package-{0}" -f ([guid]::NewGuid().ToString('N')))
+    $packageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("doed-function-package-{0}" -f ([guid]::NewGuid().ToString('N')))
     $packageSource = Join-Path $packageRoot "src"
     $zipPath = Join-Path $packageRoot "functionapp.zip"
 
@@ -773,17 +780,15 @@ function New-FunctionZipPackage {
         $_.Name -in @('__pycache__', '.pytest_cache')
     } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-    tar -a -c -f $zipPath -C $packageSource .
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create portable Function App deployment package."
-    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($packageSource, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
     return @{
         PackageRoot = $packageRoot
         ZipPath = $zipPath
     }
 }
 
-function Publish-FlexFunctionApp {
+function Publish-FunctionAppPackage {
     param(
         [Parameter(Mandatory=$true)]
         [string]$FunctionAppName,
@@ -797,7 +802,7 @@ function Publish-FlexFunctionApp {
 
     $package = New-FunctionZipPackage -FunctionAppDirectory $FunctionAppDirectory
     try {
-        Write-Host "Deploying Flex Consumption package with Azure CLI remote build..." -ForegroundColor Yellow
+        Write-Host "Deploying Function App package with Azure CLI remote build..." -ForegroundColor Yellow
         az functionapp deployment source config-zip `
             --name $FunctionAppName `
             --resource-group $ResourceGroupName `
@@ -1178,10 +1183,11 @@ function Test-InfrastructureDeployment {
 }
 
 $hostingMode = if ($UsePremium) { 'Premium' } else { 'FlexConsumption' }
+$templateFile = Join-Path $PSScriptRoot "main.bicep"
 
 $validationAttempt = Test-InfrastructureDeployment `
     -ResourceGroupName $ResourceGroupName `
-    -TemplateFile "$PSScriptRoot\main.bicep" `
+    -TemplateFile $templateFile `
     -Location $Location `
     -SearchLocation $SearchLocation `
     -GptCapacity $GptCapacity `
@@ -1208,7 +1214,7 @@ if ($validationAttempt.ExitCode -ne 0) {
         $hostingMode = 'FlexConsumption'
         $validationAttempt = Test-InfrastructureDeployment `
             -ResourceGroupName $ResourceGroupName `
-            -TemplateFile "$PSScriptRoot\main.bicep" `
+            -TemplateFile $templateFile `
             -Location $Location `
             -SearchLocation $SearchLocation `
             -GptCapacity $GptCapacity `
@@ -1250,7 +1256,7 @@ $deploymentName = "doed-comments-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 $deploymentAttempt = Invoke-InfrastructureDeployment `
     -DeploymentName $deploymentName `
     -ResourceGroupName $ResourceGroupName `
-    -TemplateFile "$PSScriptRoot\main.bicep" `
+    -TemplateFile $templateFile `
     -Location $Location `
     -SearchLocation $SearchLocation `
     -GptCapacity $GptCapacity `
@@ -1316,7 +1322,7 @@ if ($LASTEXITCODE -ne 0) {
         $deploymentAttempt = Invoke-InfrastructureDeployment `
             -DeploymentName $deploymentName `
             -ResourceGroupName $ResourceGroupName `
-            -TemplateFile "$PSScriptRoot\main.bicep" `
+            -TemplateFile $templateFile `
             -Location $Location `
             -SearchLocation $SearchLocation `
             -GptCapacity $GptCapacity `
@@ -1568,16 +1574,8 @@ Write-Host "Publishing Function App code..." -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Yellow
 Write-Host ""
 
-$funcAppDir = Join-Path $PSScriptRoot "..\doed_regulatory_comments_func"
+$funcAppDir = Join-Path $PSScriptRoot "../doed_regulatory_comments_func"
 $funcAppDir = Resolve-Path $funcAppDir
-
-# Check if Azure Functions Core Tools is installed
-if (-not (Get-Command func -ErrorAction SilentlyContinue)) {
-    Write-Host "Azure Functions Core Tools not found. Installing..." -ForegroundColor Yellow
-    winget install --id Microsoft.AzureFunctionsCoreTools --accept-source-agreements --accept-package-agreements
-    # Refresh PATH
-    $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH', 'User')
-}
 
 Push-Location $funcAppDir
 try {
@@ -1588,16 +1586,17 @@ try {
 
     for ($publishAttempt = 1; $publishAttempt -le $maxPublishAttempts; $publishAttempt++) {
         Write-Host "Publishing to $functionAppName (attempt $publishAttempt of $maxPublishAttempts)..." -ForegroundColor Yellow
-        $publishLogPath = Join-Path $env:TEMP ("func-publish-{0}.log" -f ([guid]::NewGuid().ToString('N')))
+        $publishLogPath = Join-Path ([System.IO.Path]::GetTempPath()) ("func-publish-{0}.log" -f ([guid]::NewGuid().ToString('N')))
         try {
             if ($hostingMode -eq 'FlexConsumption') {
                 $script:LastFlexPublishExitCode = 1
                 Ensure-StoragePublicNetworkAccess -StorageAccountName $storageAccountName -ResourceGroupName $ResourceGroupName
-                Publish-FlexFunctionApp -FunctionAppName $functionAppName -ResourceGroupName $ResourceGroupName -FunctionAppDirectory $funcAppDir 2>&1 | Tee-Object -FilePath $publishLogPath
+                Publish-FunctionAppPackage -FunctionAppName $functionAppName -ResourceGroupName $ResourceGroupName -FunctionAppDirectory $funcAppDir 2>&1 | Tee-Object -FilePath $publishLogPath
                 $publishExitCode = $script:LastFlexPublishExitCode
             } else {
-                func azure functionapp publish $functionAppName --python 2>&1 | Tee-Object -FilePath $publishLogPath
-                $publishExitCode = $LASTEXITCODE
+                $script:LastFlexPublishExitCode = 1
+                Publish-FunctionAppPackage -FunctionAppName $functionAppName -ResourceGroupName $ResourceGroupName -FunctionAppDirectory $funcAppDir 2>&1 | Tee-Object -FilePath $publishLogPath
+                $publishExitCode = $script:LastFlexPublishExitCode
             }
             $lastPublishOutput = if (Test-Path $publishLogPath) { Get-Content -Path $publishLogPath -Raw } else { '' }
         } finally {
@@ -1644,14 +1643,7 @@ try {
         Write-Host "Function App published successfully!" -ForegroundColor Green
     } else {
         Write-Host ""
-        Write-Host "Function App publish failed. You can retry manually:" -ForegroundColor Red
-        if ($hostingMode -eq 'FlexConsumption') {
-            Write-Host "  cd $funcAppDir" -ForegroundColor Gray
-            Write-Host "  Remove unsupported Flex app settings, wait for SCM propagation, then run az functionapp deployment source config-zip --build-remote true" -ForegroundColor Gray
-        } else {
-            Write-Host "  cd $funcAppDir" -ForegroundColor Gray
-            Write-Host "  func azure functionapp publish $functionAppName --python" -ForegroundColor Gray
-        }
+        Write-Host "Function App publish failed. Re-run deploy.ps1 to retry the Azure CLI ZIP deployment." -ForegroundColor Red
         exit 1
     }
 } finally {

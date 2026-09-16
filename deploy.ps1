@@ -181,8 +181,8 @@ if ($IncludeTags) {
 }
 
 $repoRoot = $PSScriptRoot
-$functionDeployScript = Join-Path $repoRoot "azure_func_v2\infra\deploy.ps1"
-$frontendBicep = Join-Path $repoRoot "dotnet_frontend\infra\main.bicep"
+$functionDeployScript = Join-Path $repoRoot "azure_func_v2/infra/deploy.ps1"
+$frontendBicep = Join-Path $repoRoot "dotnet_frontend/infra/main.bicep"
 $frontendProject = Join-Path $repoRoot "dotnet_frontend"
 
 function Assert-CommandAvailable {
@@ -292,7 +292,6 @@ function Resolve-ExistingCosmosAccount {
 
 Assert-CommandAvailable -Name 'az'
 Assert-CommandAvailable -Name 'dotnet'
-Assert-CommandAvailable -Name 'tar'
 
 $accountJson = az account show 2>$null
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($accountJson)) {
@@ -739,7 +738,8 @@ if (-not $SkipFrontendPublish) {
         if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
         }
-        Invoke-NativeChecked -Command 'tar' -Arguments @('-a', '-c', '-f', $zipPath, '-C', $publishDir, '.') -FailureMessage "Failed to create frontend deployment package."
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($publishDir, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 
         Invoke-NativeChecked -Command 'az' -Arguments @(
             'webapp', 'deploy',
