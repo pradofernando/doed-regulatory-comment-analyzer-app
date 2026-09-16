@@ -29,7 +29,7 @@ The App Service uses a system-assigned managed identity for Azure service access
 
 | Resource | Purpose |
 | --- | --- |
-| Linux App Service plan | Hosts the web application. The default SKU is `B1`. |
+| Linux App Service plan | Hosts the web application. The default SKU is `P0v3`. |
 | Linux App Service | Runs the .NET 9 Blazor Server application. |
 | System-assigned managed identity | Authenticates the app to Azure services without application secrets. |
 | Key Vault | Stores the Regulations.gov API key and Foundry project endpoint. |
@@ -278,7 +278,7 @@ These Bicep settings are currently edited in `main.bicepparam` rather than set t
 | Parameter | Default | Notes |
 | --- | ---: | --- |
 | `baseName` | `doedweb` | Resource-name prefix; 3-15 characters. |
-| `appServicePlanSku` | `B1` | Allowed B/Pv3 SKUs are enforced by Bicep. |
+| `appServicePlanSku` | `P0v3` | Allowed B/Pv3 SKUs are enforced by Bicep. |
 | `defaultDocumentId` | `ED-2025-SCC-0481-0001` | UI default. |
 | `batchSize` | `5` | Grouping batch size, 1-20. |
 | `payloadOffloadThresholdBytes` | `524288` | Cosmos raw-payload offload threshold. |
@@ -305,7 +305,7 @@ Operational requirements:
 - Keep App Service at one instance.
 - Back up `/home/data/analysis.db` before risky upgrades.
 - Use Azure SQL or Cosmos before enabling horizontal scale-out.
-- B1 does not enable Always On in this template; use a supported higher SKU if cold starts are unacceptable.
+- The default P0v3 plan enables Always On. Keep it enabled for production readiness.
 
 ### Profile B: existing Azure SQL
 
@@ -701,7 +701,7 @@ Back up the account or use continuous backup before a production migration.
 3. Run `azd deploy web`.
 4. Verify `/health/live`, `/health/ready`, and a read-only Library operation.
 
-The default B1 deployment does not create a deployment slot. If zero-downtime rollback is required, use a tier that supports slots and add slot resources before production rollout.
+The default P0v3 deployment does not create a deployment slot automatically. Add slot resources before production rollout if zero-downtime deployment and rollback are required.
 
 ### Infrastructure rollback
 

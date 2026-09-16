@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "7662204421233793908"
+      "templateHash": "10654836211569019205"
     }
   },
   "parameters": {
@@ -38,6 +38,13 @@
         "description": "Azure region for all resources. Must support Azure OpenAI and Azure AI Foundry."
       }
     },
+    "searchLocation": {
+      "type": "string",
+      "defaultValue": "[parameters('location')]",
+      "metadata": {
+        "description": "Azure region for AI Search. Defaults to the Function stack region. A different region creates a region-suffixed Search service for side-by-side migration."
+      }
+    },
     "gptCapacity": {
       "type": "int",
       "defaultValue": 10,
@@ -61,6 +68,18 @@
       "maxValue": 100,
       "metadata": {
         "description": "text-embedding-3-large deployment capacity in thousands of tokens per minute."
+      }
+    },
+    "embeddingSkuName": {
+      "type": "string",
+      "defaultValue": "GlobalStandard",
+      "allowedValues": [
+        "GlobalStandard",
+        "Standard",
+        "DataZoneStandard"
+      ],
+      "metadata": {
+        "description": "Deployment SKU for text-embedding-3-large. Use Standard or DataZoneStandard when GlobalStandard quota is unavailable."
       }
     },
     "regulationsGovApiKey": {
@@ -189,7 +208,10 @@
     "logAnalyticsName": "[format('law-{0}', parameters('baseName'))]",
     "aiFoundryName": "[format('aif-{0}-{1}', parameters('baseName'), variables('uniqueSuffix'))]",
     "documentIntelligenceName": "[format('docint-{0}-{1}', parameters('baseName'), variables('uniqueSuffix'))]",
-    "searchServiceName": "[format('srch-{0}-{1}', parameters('baseName'), variables('uniqueSuffix'))]",
+    "normalizedLocation": "[toLower(replace(parameters('location'), ' ', ''))]",
+    "normalizedSearchLocation": "[toLower(replace(parameters('searchLocation'), ' ', ''))]",
+    "searchLocationNamePart": "[if(equals(variables('normalizedSearchLocation'), variables('normalizedLocation')), '', format('-{0}', variables('normalizedSearchLocation')))]",
+    "searchServiceName": "[format('srch-{0}-{1}{2}', parameters('baseName'), variables('uniqueSuffix'), variables('searchLocationNamePart'))]",
     "aiProjectName": "[format('aiproj-{0}', parameters('baseName'))]",
     "foundryProjectEndpoint": "[format('https://{0}.cognitiveservices.azure.com/api/projects/{1}', variables('aiFoundryName'), variables('aiProjectName'))]",
     "usePremiumHosting": "[equals(parameters('hostingMode'), 'Premium')]",
@@ -330,7 +352,7 @@
       "type": "Microsoft.Search/searchServices",
       "apiVersion": "2022-09-01",
       "name": "[variables('searchServiceName')]",
-      "location": "[parameters('location')]",
+      "location": "[parameters('searchLocation')]",
       "tags": "[variables('tags')]",
       "identity": {
         "type": "SystemAssigned"
@@ -409,7 +431,7 @@
       "apiVersion": "2025-06-01",
       "name": "[format('{0}/{1}', variables('aiFoundryName'), 'text-embedding-3-large')]",
       "sku": {
-        "name": "GlobalStandard",
+        "name": "[parameters('embeddingSkuName')]",
         "capacity": "[parameters('embeddingCapacity')]"
       },
       "properties": {
@@ -473,7 +495,9 @@
         "[resourceId('Microsoft.CognitiveServices/accounts', variables('documentIntelligenceName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
-        "[resourceId('Microsoft.CognitiveServices/accounts/deployments', variables('aiFoundryName'), 'gpt-4o')]"
+        "[resourceId('Microsoft.CognitiveServices/accounts/deployments', variables('aiFoundryName'), 'gpt-4o')]",
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageAccountName'), 'default', 'function-releases')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -531,7 +555,8 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -544,7 +569,10 @@
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
         "principalId": "[parameters('deployerPrincipalId')]",
         "principalType": "[parameters('deployerPrincipalType')]"
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
@@ -557,7 +585,8 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]"
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -571,7 +600,8 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -584,7 +614,10 @@
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
         "principalId": "[parameters('deployerPrincipalId')]",
         "principalType": "[parameters('deployerPrincipalType')]"
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
@@ -597,7 +630,8 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -610,7 +644,10 @@
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
         "principalId": "[parameters('deployerPrincipalId')]",
         "principalType": "[parameters('deployerPrincipalType')]"
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",

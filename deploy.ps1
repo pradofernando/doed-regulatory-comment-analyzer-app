@@ -27,6 +27,9 @@ param(
     [string]$FrontendLocation = "",
 
     [Parameter(Mandatory=$false)]
+    [string]$SearchLocation = "",
+
+    [Parameter(Mandatory=$false)]
     [string]$RegulationsGovApiKey = $env:REGS_API_KEY,
 
     [Parameter(Mandatory=$false)]
@@ -42,7 +45,7 @@ param(
     [string]$FrontendBaseName = "doedweb",
 
     [Parameter(Mandatory=$false)]
-    [string]$FrontendSku = "B1",
+    [string]$FrontendSku = "P0v3",
 
     [Parameter(Mandatory=$false)]
     [ValidateSet('Sqlite', 'AzureSql', 'Cosmos')]
@@ -94,6 +97,10 @@ param(
     [int]$EmbeddingCapacity = 10,
 
     [Parameter(Mandatory=$false)]
+    [ValidateSet('GlobalStandard', 'Standard', 'DataZoneStandard')]
+    [string]$EmbeddingSkuName = "GlobalStandard",
+
+    [Parameter(Mandatory=$false)]
     [string]$DeploymentSuffix = "",
 
     [Parameter(Mandatory=$false)]
@@ -132,6 +139,9 @@ if ([string]::IsNullOrWhiteSpace($FrontendResourceGroupName)) {
 }
 if ([string]::IsNullOrWhiteSpace($FrontendLocation)) {
     $FrontendLocation = $Location
+}
+if ([string]::IsNullOrWhiteSpace($SearchLocation)) {
+    $SearchLocation = $Location
 }
 if ([string]::IsNullOrWhiteSpace($CosmosResourceGroupName)) {
     $CosmosResourceGroupName = $FrontendResourceGroupName
@@ -299,6 +309,7 @@ Write-Host "Subscription:             $($account.name)" -ForegroundColor White
 Write-Host "Function resource group:  $ResourceGroupName" -ForegroundColor White
 Write-Host "Frontend resource group:  $FrontendResourceGroupName" -ForegroundColor White
 Write-Host "Function location:        $Location" -ForegroundColor White
+Write-Host "AI Search location:       $SearchLocation" -ForegroundColor White
 Write-Host "Frontend location:        $FrontendLocation" -ForegroundColor White
 Write-Host "Frontend persistence:     $PersistenceProvider" -ForegroundColor White
 Write-Host ""
@@ -320,11 +331,13 @@ if (-not $SkipFunctionDeployment) {
         '-ResourceGroupName', $ResourceGroupName,
         '-BaseName', $FunctionBaseName,
         '-Location', $Location,
+        '-SearchLocation', $SearchLocation,
         '-RegulationsGovApiKey', $RegulationsGovApiKey,
         '-DocumentId', $DocumentId,
         '-BatchSize', [string]$BatchSize,
         '-GptCapacity', [string]$GptCapacity,
         '-EmbeddingCapacity', [string]$EmbeddingCapacity,
+        '-EmbeddingSkuName', $EmbeddingSkuName,
         '-AgentDeploymentOutputPath', $agentDeploymentOutputPath
     )
 

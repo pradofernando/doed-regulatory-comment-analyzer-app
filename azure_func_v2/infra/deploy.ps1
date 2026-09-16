@@ -32,6 +32,9 @@ param(
     # =========================================================================
     [Parameter(Mandatory=$false)]
     [string]$Location = "eastus",  # <-- CHANGE THIS TO DEPLOY TO A DIFFERENT REGION
+
+    [Parameter(Mandatory=$false)]
+    [string]$SearchLocation = "",
     
     [Parameter(Mandatory=$true)]
     [string]$RegulationsGovApiKey,
@@ -50,6 +53,10 @@ param(
 
     [Parameter(Mandatory=$false)]
     [int]$EmbeddingCapacity = 10,
+
+    [Parameter(Mandatory=$false)]
+    [ValidateSet('GlobalStandard', 'Standard', 'DataZoneStandard')]
+    [string]$EmbeddingSkuName = "GlobalStandard",
 
     [Parameter(Mandatory=$false)]
     [string]$FoundryProjectEndpoint = "",
@@ -72,6 +79,10 @@ param(
     [Parameter(Mandatory=$false)]
     [string]$ExistingFunctionStorageAccountName = ""
 )
+
+if ([string]::IsNullOrWhiteSpace($SearchLocation)) {
+    $SearchLocation = $Location
+}
 
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
     $PSNativeCommandUseErrorActionPreference = $false
@@ -913,6 +924,8 @@ Write-Host ""
 Write-Host "Subscription: $($account.name)" -ForegroundColor White
 Write-Host "Resource Group: $ResourceGroupName" -ForegroundColor White
 Write-Host "Location: $Location" -ForegroundColor White
+Write-Host "AI Search Location: $SearchLocation" -ForegroundColor White
+Write-Host "Embedding Deployment SKU: $EmbeddingSkuName" -ForegroundColor White
 Write-Host "Document ID: $DocumentId" -ForegroundColor White
 if (-not [string]::IsNullOrWhiteSpace($FoundryProjectEndpoint)) {
     Write-Host "Foundry Project Endpoint: $FoundryProjectEndpoint" -ForegroundColor White
@@ -1001,10 +1014,16 @@ function Invoke-InfrastructureDeployment {
         [string]$Location,
 
         [Parameter(Mandatory=$true)]
+        [string]$SearchLocation,
+
+        [Parameter(Mandatory=$true)]
         [int]$GptCapacity,
 
         [Parameter(Mandatory=$true)]
         [int]$EmbeddingCapacity,
+
+        [Parameter(Mandatory=$true)]
+        [string]$EmbeddingSkuName,
 
         [Parameter(Mandatory=$true)]
         [string]$RegulationsGovApiKey,
@@ -1016,9 +1035,11 @@ function Invoke-InfrastructureDeployment {
         [int]$BatchSize,
 
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$DeployerPrincipalId,
 
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$DeployerPrincipalType,
 
         [Parameter(Mandatory=$true)]
@@ -1047,8 +1068,10 @@ function Invoke-InfrastructureDeployment {
         --parameters baseName=$BaseName `
         --parameters deploymentSuffix=$DeploymentSuffix `
         --parameters location=$Location `
+        --parameters searchLocation=$SearchLocation `
         --parameters gptCapacity=$GptCapacity `
         --parameters embeddingCapacity=$EmbeddingCapacity `
+        --parameters embeddingSkuName=$EmbeddingSkuName `
         --parameters regulationsGovApiKey=$RegulationsGovApiKey `
         --parameters documentId=$DocumentId `
         --parameters batchSize=$BatchSize `
@@ -1079,10 +1102,16 @@ function Test-InfrastructureDeployment {
         [string]$Location,
 
         [Parameter(Mandatory=$true)]
+        [string]$SearchLocation,
+
+        [Parameter(Mandatory=$true)]
         [int]$GptCapacity,
 
         [Parameter(Mandatory=$true)]
         [int]$EmbeddingCapacity,
+
+        [Parameter(Mandatory=$true)]
+        [string]$EmbeddingSkuName,
 
         [Parameter(Mandatory=$true)]
         [string]$RegulationsGovApiKey,
@@ -1094,9 +1123,11 @@ function Test-InfrastructureDeployment {
         [int]$BatchSize,
 
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$DeployerPrincipalId,
 
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$DeployerPrincipalType,
 
         [Parameter(Mandatory=$true)]
@@ -1124,8 +1155,10 @@ function Test-InfrastructureDeployment {
         --parameters baseName=$BaseName `
         --parameters deploymentSuffix=$DeploymentSuffix `
         --parameters location=$Location `
+        --parameters searchLocation=$SearchLocation `
         --parameters gptCapacity=$GptCapacity `
         --parameters embeddingCapacity=$EmbeddingCapacity `
+        --parameters embeddingSkuName=$EmbeddingSkuName `
         --parameters regulationsGovApiKey=$RegulationsGovApiKey `
         --parameters documentId=$DocumentId `
         --parameters batchSize=$BatchSize `
@@ -1150,8 +1183,10 @@ $validationAttempt = Test-InfrastructureDeployment `
     -ResourceGroupName $ResourceGroupName `
     -TemplateFile "$PSScriptRoot\main.bicep" `
     -Location $Location `
+    -SearchLocation $SearchLocation `
     -GptCapacity $GptCapacity `
     -EmbeddingCapacity $EmbeddingCapacity `
+    -EmbeddingSkuName $EmbeddingSkuName `
     -RegulationsGovApiKey $RegulationsGovApiKey `
     -DocumentId $DocumentId `
     -BatchSize $BatchSize `
@@ -1175,8 +1210,10 @@ if ($validationAttempt.ExitCode -ne 0) {
             -ResourceGroupName $ResourceGroupName `
             -TemplateFile "$PSScriptRoot\main.bicep" `
             -Location $Location `
+            -SearchLocation $SearchLocation `
             -GptCapacity $GptCapacity `
             -EmbeddingCapacity $EmbeddingCapacity `
+            -EmbeddingSkuName $EmbeddingSkuName `
             -RegulationsGovApiKey $RegulationsGovApiKey `
             -DocumentId $DocumentId `
             -BatchSize $BatchSize `
@@ -1215,8 +1252,10 @@ $deploymentAttempt = Invoke-InfrastructureDeployment `
     -ResourceGroupName $ResourceGroupName `
     -TemplateFile "$PSScriptRoot\main.bicep" `
     -Location $Location `
+    -SearchLocation $SearchLocation `
     -GptCapacity $GptCapacity `
     -EmbeddingCapacity $EmbeddingCapacity `
+    -EmbeddingSkuName $EmbeddingSkuName `
     -RegulationsGovApiKey $RegulationsGovApiKey `
     -DocumentId $DocumentId `
     -BatchSize $BatchSize `
@@ -1279,8 +1318,10 @@ if ($LASTEXITCODE -ne 0) {
             -ResourceGroupName $ResourceGroupName `
             -TemplateFile "$PSScriptRoot\main.bicep" `
             -Location $Location `
+            -SearchLocation $SearchLocation `
             -GptCapacity $GptCapacity `
             -EmbeddingCapacity $EmbeddingCapacity `
+            -EmbeddingSkuName $EmbeddingSkuName `
             -RegulationsGovApiKey $RegulationsGovApiKey `
             -DocumentId $DocumentId `
             -BatchSize $BatchSize `

@@ -55,6 +55,9 @@ param baseName string = 'doed-comments'
 ])
 param location string = 'eastus'  // <-- CHANGE THIS TO DEPLOY TO A DIFFERENT REGION
 
+@description('Azure region for AI Search. Defaults to the Function stack region. A different region creates a region-suffixed Search service for side-by-side migration.')
+param searchLocation string = location
+
 @description('Default GPT-4o model deployment capacity in thousands of tokens per minute.')
 @minValue(1)
 @maxValue(100)
@@ -67,6 +70,14 @@ param preferredAgentModelDeploymentName string = 'gpt-5.4'
 @minValue(1)
 @maxValue(100)
 param embeddingCapacity int = 10
+
+@description('Deployment SKU for text-embedding-3-large. Use Standard or DataZoneStandard when GlobalStandard quota is unavailable.')
+@allowed([
+  'GlobalStandard'
+  'Standard'
+  'DataZoneStandard'
+])
+param embeddingSkuName string = 'GlobalStandard'
 
 @description('The Regulations.gov API key. Get one free at https://open.gsa.gov/api/regulationsgov/')
 @secure()
@@ -144,7 +155,10 @@ var appInsightsName = 'appi-${baseName}'
 var logAnalyticsName = 'law-${baseName}'
 var aiFoundryName = 'aif-${baseName}-${uniqueSuffix}'
 var documentIntelligenceName = 'docint-${baseName}-${uniqueSuffix}'
-var searchServiceName = 'srch-${baseName}-${uniqueSuffix}'
+var normalizedLocation = toLower(replace(location, ' ', ''))
+var normalizedSearchLocation = toLower(replace(searchLocation, ' ', ''))
+var searchLocationNamePart = normalizedSearchLocation == normalizedLocation ? '' : '-${normalizedSearchLocation}'
+var searchServiceName = 'srch-${baseName}-${uniqueSuffix}${searchLocationNamePart}'
 var aiProjectName = 'aiproj-${baseName}'
 var foundryProjectEndpoint = 'https://${aiFoundryName}.cognitiveservices.azure.com/api/projects/${aiProjectName}'
 var usePremiumHosting = hostingMode == 'Premium'
@@ -367,7 +381,7 @@ resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2023-10-01-p
 #disable-next-line BCP334
 resource searchService 'Microsoft.Search/searchServices@2022-09-01' = {
   name: searchServiceName
-  location: location
+  location: searchLocation
   tags: tags
 
   identity: {
@@ -462,7 +476,7 @@ resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployme
   ]
 
   sku: {
-    name: 'GlobalStandard'
+    name: embeddingSkuName
     capacity: embeddingCapacity
   }
 
@@ -507,64 +521,6 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   location: location
   tags: tags
   kind: 'functionapp,linux'
-
-Foundry Project Endpoint: https://aif-doed-comments-2117ea4b90e74.cognitiveservices.azure.com/api/projects/aiproj-doed-comments
-Creating agent versions with Azure AI Projects SDK and Entra auth (attempt 1 of 8)...
-Categorization Agent created: RegulatoryCommentCategorizationAgent:1
-Grouping Agent created: RegulatoryCommentGroupingAgent:1
-Validation Agent created: RegulatoryCommentValidationAgent:1
-Follow-up Q&A Agent created: RegulatoryCommentFollowUpAgent:1
-
-Updating Function App settings with agent endpoint, names, and versions...
-Function App settings updated.
-
-  Foundry Project Endpoint:  https://aif-doed-comments-2117ea4b90e74.cognitiveservices.azure.com/api/projects/aiproj-doed-comments
-  Categorization Agent Name: RegulatoryCommentCategorizationAgent
-  Categorization Agent ID:   RegulatoryCommentCategorizationAgent:1
-  Grouping Agent Name:       RegulatoryCommentGroupingAgent
-  Grouping Agent ID:         RegulatoryCommentGroupingAgent:1
-  Validation Agent Name:     RegulatoryCommentValidationAgent
-  Validation Agent ID:       RegulatoryCommentValidationAgent:1
-  Follow-up Q&A Agent Name:  RegulatoryCommentFollowUpAgent
-  Follow-up Q&A Agent ID:    RegulatoryCommentFollowUpAgent:1
-
-
-============================================
-All done! Your app is fully deployed.
-The function runs daily at 3AM EST (8AM UTC).
-Monitor it at: https://portal.azure.com
-============================================
-
-============================================
-Step 2/4: Reading Function deployment settings
-============================================
-Function App:              func-doed-comments-2117ea4b90e74
-Foundry endpoint:          https://aif-doed-comments-2117ea4b90e74.cognitiveservices.azure.com/api/projects/aiproj-doed-comments
-Categorization agent:      RegulatoryCommentCategorizationAgent v1
-Grouping agent:            RegulatoryCommentGroupingAgent v1
-Validation agent:          RegulatoryCommentValidationAgent v1
-Follow-up Q&A agent:       RegulatoryCommentFollowUpAgent v1
-
-============================================
-Step 3/4: Deploying frontend infrastructure
-============================================
-Previewing frontend Bicep changes...
-InvalidTemplateDeployment - The template deployment 'main' is not valid according to the validation procedure. The following resource provider(s) - 'Microsoft.Web/serverFarms (2024-04-01)' reported preflight validation errors. Tracking id is '12d52812-c657-47a6-a3e8-1e619447bb95'. See inner errors for details.
-ValidationForResourceFailed - Validation failed for a resource. Check 'Error.Details[0]' formore information.
-InternalSubscriptionIsOverQuotaForSku - Operation cannot be completed without additional quota. See https://aka.ms/antquotahelp for instructions on requesting limit increases. 
-Additional details - Location:  
-Current Limit (B1 VMs): 0 
-Current Usage: 0
-Amount required for this deployment (B1 VMs): 1 
-(Minimum) New Limit that you should request to enable this deployment: 1. 
-Note that if you experience multiple scaling operations failing (in addition to this one) and need to accommodate the aggregate quota requirements of these operations, you will need to request a higher quota limit than the one currently displayed.
-Frontend Bicep what-if failed.
-At C:\src\doed-regulatory-comment-analyzer-app\deploy.ps1:188 char:9
-+         throw $FailureMessage
-+         ~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : OperationStopped: (Frontend Bicep what-if failed.:String) [], 
-    RuntimeException
-    + FullyQualifiedErrorId : Frontend Bicep what-if failed.
   dependsOn: [
     storageAccountNew
     releasesContainer

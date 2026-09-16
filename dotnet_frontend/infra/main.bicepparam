@@ -1,7 +1,7 @@
 using './main.bicep'
 
 param baseName = 'doedweb'
-param appServicePlanSku = 'B1'
+param appServicePlanSku = 'P0v3'
 
 // Preferred region is eastus2. If the subscription has no dedicated App Service (B1+)
 // quota there, set AZURE_LOCATION=centralus. Confirm with `az deployment group what-if`

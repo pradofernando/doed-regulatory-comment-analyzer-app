@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "3884468935884135796"
+      "templateHash": "12977094385165550870"
     }
   },
   "parameters": {
@@ -27,7 +27,7 @@
     },
     "appServicePlanSku": {
       "type": "string",
-      "defaultValue": "B1",
+      "defaultValue": "P0v3",
       "allowedValues": [
         "B1",
         "B2",
@@ -37,7 +37,7 @@
         "P2v3"
       ],
       "metadata": {
-        "description": "SKU for the Linux App Service Plan. B1 is sufficient for the workload; bump to P1v3 for more memory/CPU."
+        "description": "SKU for the Linux App Service Plan. P0v3 is the production default."
       }
     },
     "regulationsGovApiKey": {

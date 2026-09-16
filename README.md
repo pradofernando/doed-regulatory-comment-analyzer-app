@@ -136,6 +136,23 @@ The root deployment orchestrates Function v2 and the frontend. It now defaults t
 	-RegulationsGovApiKey $env:REGS_API_KEY
 ```
 
+Azure AI Search defaults to the Function region. To deploy Search independently, pass `-SearchLocation`; a different region creates a region-suffixed Search service so the existing service remains available during index and connection migration:
+
+```powershell
+.\deploy.ps1 `
+    -RegulationsGovApiKey $env:REGS_API_KEY `
+    -SearchLocation centralus
+```
+
+If `GlobalStandard` quota for `text-embedding-3-large` is exhausted, select a SKU with available quota in the Function region. For example, use East US regional Standard capacity:
+
+```powershell
+.\deploy.ps1 `
+    -RegulationsGovApiKey $env:REGS_API_KEY `
+    -Location eastus `
+    -EmbeddingSkuName Standard
+```
+
 To retain existing Cosmos results, pass the existing endpoint and account name. Add `-CosmosResourceGroupName` when it is not the frontend resource group:
 
 ```powershell
