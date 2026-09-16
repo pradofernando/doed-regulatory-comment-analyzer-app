@@ -1613,6 +1613,14 @@ try {
         $deploymentBusy = $lastPublishOutput -match 'another deployment in progress' `
             -or $lastPublishOutput -match 'Deployment was cancelled' `
             -or $lastPublishOutput -match 'SCM site is currently busy'
+        $resourceNotReady = $lastPublishOutput -match 'ResourceNotFound' `
+            -or $lastPublishOutput -match "Microsoft\.Web/sites/.+ was not found"
+
+        if ($resourceNotReady -and $publishAttempt -lt $maxPublishAttempts) {
+            Write-Host "Function App deployment endpoint is not available yet; waiting 30 seconds before retrying..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 30
+            continue
+        }
 
         if ($deploymentBusy -and $publishAttempt -lt $maxPublishAttempts) {
             if (-not $deploymentBusyChoiceMade) {
