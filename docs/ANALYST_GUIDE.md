@@ -197,6 +197,13 @@ Open **Notifications** to read the persistent in-app inbox and mark entries
 read. The inbox is shared by users of the app. Email and Teams delivery are not
 part of this implementation.
 
+The small bell in the top bar opens the same inbox. Its red badge shows the
+number of **unread** notifications across all inbox pages and disappears when
+none are unread. New notifications and successful **Mark read** actions update
+the count; a periodic refresh also picks up changes made by another app instance.
+If the count cannot be loaded, the bell displays an unavailable indicator rather
+than a misleading zero.
+
 The background monitor needs the web app to be running. Automatic monitoring
 is disabled by default locally and enabled through the deployment
 configuration. Manual checks remain available.

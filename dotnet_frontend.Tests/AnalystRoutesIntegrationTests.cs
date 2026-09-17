@@ -86,6 +86,27 @@ public sealed class AnalystRoutesIntegrationTests : IClassFixture<AnalystWebAppl
         Assert.NotNull(card.SelectSingleNode("p"));
     }
 
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/notifications")]
+    [InlineData("/compare")]
+    public async Task HeaderHasNotificationBell_AndNotificationsFollowCompareInNavigation(string route)
+    {
+        using var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
+        var document = new HtmlAgilityPack.HtmlDocument();
+        document.LoadHtml(await client.GetStringAsync(route));
+        var bell = document.DocumentNode.SelectSingleNode("//header//a[@href='notifications' and contains(@class,'notification-bell')]");
+        Assert.NotNull(bell);
+        Assert.Contains("Notifications:", bell.GetAttributeValue("aria-label", ""));
+        var links = document.DocumentNode.SelectNodes("//aside//nav//a").Select(node => node.GetAttributeValue("href", "")).ToList();
+        Assert.Equal(links.IndexOf("compare") + 1, links.IndexOf("notifications"));
+        if (route == "/")
+        {
+            var cards = document.DocumentNode.SelectNodes("//a[contains(@class,'feature-card--link')]").Select(node => node.GetAttributeValue("href", "")).ToList();
+            Assert.Equal(cards.IndexOf("compare") + 1, cards.IndexOf("notifications"));
+        }
+    }
+
     [Fact]
     public async Task SavedReview_RendersEffectiveAnalysisEvidenceAndExportsWithoutChangingOriginal()
     {

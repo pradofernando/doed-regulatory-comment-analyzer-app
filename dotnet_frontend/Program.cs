@@ -103,6 +103,8 @@ builder.Services.AddOptions<MonitoringOptions>().Bind(builder.Configuration.GetS
     .Validate(o => o.MaxAutoAnalysisComments is >= 1 and <= 1000, "Automatic analysis must be limited to 1 to 1000 comments per check.")
     .ValidateOnStart();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<NotificationChangeSignal>();
+builder.Services.AddSingleton<NotificationCountService>();
 builder.Services.AddScoped<IDocketCommentSource, RegulationsDocketSource>();
 builder.Services.AddScoped<DocketMonitorService>();
 builder.Services.AddHostedService<DocketMonitorWorker>();

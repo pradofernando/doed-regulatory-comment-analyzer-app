@@ -1,12 +1,13 @@
 @page "/notifications"
 @rendermode InteractiveServer
-@inject IWorkspaceRepository Workspace
 @inject DocketMonitorService Monitor
+@inject NotificationChangeSignal NotificationChanges
 @inject ILogger<Notifications> Logger
 
 <PageTitle>Notifications</PageTitle>
 <h1>Notifications</h1>
-<p>Persistent, shared docket changes and deadline reminders. Marking an item read affects the shared inbox, not a private user account.</p>
+<p>Persistent, shared docket changes and deadline reminders. The top-bar bell shows unread notifications.
+    Marking an item read updates that count for the shared inbox, not a private user account.</p>
 <button class="btn btn-outline-primary mb-3" @onclick="Refresh" disabled="@_busy">Refresh inbox</button>
 @if (_error is not null) { <div class="alert alert-danger" role="alert">@_error</div> }
 @if (_items.Count == 0) { <p>No notifications yet. <a href="watchlists">Add a watch</a> and check its docket.</p> }
@@ -34,8 +35,14 @@
     private string? _token;
     private string? _error;
     private bool _busy;
-    protected override Task OnInitializedAsync() => Refresh();
-    private Task Refresh() => Execute(async () => { _items.Clear(); _token = null; await Load(); });
+    protected override Task OnInitializedAsync() => Execute(Load);
+    private Task Refresh() => Execute(async () =>
+    {
+        _items.Clear();
+        _token = null;
+        await Load();
+        NotificationChanges.NotifyChanged();
+    });
     private Task More() => Execute(Load);
     private async Task Load()
     {
@@ -45,9 +52,7 @@
     }
     private Task MarkRead(WorkspaceItem item) => Execute(async () =>
     {
-        var note = WorkspaceJson.Read<DocketNotification>(item);
-        note.ReadAt = DateTimeOffset.UtcNow;
-        var saved = await Workspace.SaveAsync(DocketMonitorService.NotificationKind, item.Id, WorkspaceJson.Write(note), item.Version);
+        var saved = await Monitor.MarkNotificationReadAsync(item);
         _items[_items.IndexOf(item)] = saved;
     });
     private async Task Execute(Func<Task> action)

@@ -17,14 +17,19 @@ public sealed class DocketMonitoringTests
         var source = new FakeSource();
         var clock = new TestClock();
         var runner = new FakeRunner();
-        var service = Service(store, source, runner, clock);
+        var changes = new NotificationChangeSignal();
+        var service = Service(store, source, runner, clock, changes);
         var watch = await service.SaveAsync(new DocketWatch { DocketId = "ed-test-2026", Name = "Test" }, null);
         await service.CheckAsync(watch.Watch.Id);
         Assert.Empty((await service.ListNotificationsAsync()).Items);
+        Assert.Equal(0, changes.Version);
         source.Comments[0].Attributes.Title = "Modified";
         source.Comments.Add(TestData.Comment("B", comment: "A new comment"));
         await service.CheckAsync(watch.Watch.Id);
+        var changedVersion = changes.Version;
+        Assert.True(changedVersion > 0);
         await service.CheckAsync(watch.Watch.Id);
+        Assert.Equal(changedVersion, changes.Version);
         var note = WorkspaceJson.Read<DocketNotification>(Assert.Single((await service.ListNotificationsAsync()).Items));
         Assert.Contains("1 new and 1 modified", note.Title);
         Assert.Equal(2, note.CommentIds.Count);
@@ -110,6 +115,31 @@ public sealed class DocketMonitoringTests
     }
 
     [Fact]
+    public async Task MarkRead_PersistsSharedStateAndSignalsOnlyAfterASuccessfulSave()
+    {
+        await using var store = await AnalystSqliteStore.CreateAsync();
+        var changes = new NotificationChangeSignal();
+        var clock = new TestClock();
+        var service = Service(store, new FakeSource(), new FakeRunner(), clock, changes);
+        var note = new DocketNotification { Id = "test-note", Title = "Synthetic notification", CreatedAt = clock.Now };
+        var item = await store.Workspace.SaveAsync(DocketMonitorService.NotificationKind, note.Id, WorkspaceJson.Write(note), null);
+        var signal = changes.WhenChanged(changes.Version);
+
+        var saved = await service.MarkNotificationReadAsync(item);
+
+        Assert.Equal(clock.Now, WorkspaceJson.Read<DocketNotification>(saved).ReadAt);
+        Assert.True(signal.IsCompletedSuccessfully);
+        var reopened = await store.Workspace.GetAsync(DocketMonitorService.NotificationKind, note.Id);
+        Assert.NotNull(reopened);
+        Assert.Equal(clock.Now, WorkspaceJson.Read<DocketNotification>(reopened).ReadAt);
+        var version = changes.Version;
+        await Assert.ThrowsAsync<WorkspaceConflictException>(() => service.MarkNotificationReadAsync(item));
+        Assert.Equal(version, changes.Version);
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.MarkNotificationReadAsync(new WorkspaceItem(note.Id, "watches", item.Json, item.Version)));
+    }
+
+    [Fact]
     public void Compare_ReportsChangedSourcesScopeAndConfigurationWithoutInferringRemoval()
     {
         var before = AnalystTestData.Run();
@@ -127,10 +157,11 @@ public sealed class DocketMonitoringTests
         Assert.Contains(RunComparisonService.Compare(before, after).Warnings, w => w.Contains("provenance is missing"));
     }
 
-    private static DocketMonitorService Service(AnalystSqliteStore store, FakeSource source, FakeRunner runner, TestClock clock) =>
+    private static DocketMonitorService Service(
+        AnalystSqliteStore store, FakeSource source, FakeRunner runner, TestClock clock, NotificationChangeSignal? changes = null) =>
         new(store.Workspace, source, runner, store.Analyses,
             new ApiSettingsStore(new ConfigurationBuilder().Build(), new TestEnvironment()),
-            Options.Create(new MonitoringOptions()), clock, NullLogger<DocketMonitorService>.Instance);
+            Options.Create(new MonitoringOptions()), clock, NullLogger<DocketMonitorService>.Instance, changes ?? new NotificationChangeSignal());
 
     private sealed class TestEnvironment : IHostEnvironment
     {

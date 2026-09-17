@@ -1,0 +1,91 @@
+@implements IAsyncDisposable
+@inject NotificationCountService Counts
+@inject ILogger<NotificationBell> Logger
+
+<a class="notification-bell" href="notifications" title="@AccessibleLabel" aria-label="@AccessibleLabel"
+   aria-busy="@(_loading ? "true" : "false")">
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+        <path d="M6 9a6 6 0 0 1 12 0v6l2 2H4l2-2V9Zm4 11h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+    @if (_unreadCount is > 0)
+    {
+        <span class="notification-bell__badge" aria-hidden="true">@_unreadCount.Value.ToString("N0")</span>
+    }
+    else if (_failed)
+    {
+        <span class="notification-bell__unavailable" aria-hidden="true">!</span>
+    }
+</a>
+<span class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">@AccessibleLabel</span>
+
+@code {
+    private readonly CancellationTokenSource _stopping = new();
+    private Task? _updates;
+    private long? _unreadCount;
+    private long _observedVersion;
+    private bool _loading = true;
+    private bool _failed;
+
+    private string AccessibleLabel => _failed ? "Notifications: unread count unavailable. Open the inbox to retry."
+        : _unreadCount switch
+        {
+            null => "Notifications: loading unread count",
+            0 => "Notifications: no unread notifications",
+            1 => "Notifications: 1 unread notification",
+            var count => $"Notifications: {count:N0} unread notifications",
+        };
+
+    protected override Task OnInitializedAsync() => RefreshAsync();
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) _updates = RefreshLoopAsync();
+        return Task.CompletedTask;
+    }
+
+    private async Task RefreshAsync()
+    {
+        _observedVersion = Counts.Version;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        try
+        {
+            _unreadCount = await Counts.GetUnreadCountAsync(timeout.Token);
+            _failed = false;
+        }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested) { }
+        catch (Exception ex) when (DocketMonitorService.ExpectedFailure(ex))
+        {
+            Logger.LogWarning(ex, "Could not refresh the unread notification count");
+            _unreadCount = null;
+            _failed = true;
+        }
+        finally { _loading = false; }
+    }
+
+    private async Task RefreshLoopAsync()
+    {
+        try
+        {
+            while (!_stopping.IsCancellationRequested)
+            {
+                try { await Counts.WhenChanged(_observedVersion).WaitAsync(NotificationCountService.RefreshInterval, _stopping.Token); }
+                catch (TimeoutException) { }
+                _stopping.Token.ThrowIfCancellationRequested();
+                await InvokeAsync(async () =>
+                {
+                    await RefreshAsync();
+                    if (!_stopping.IsCancellationRequested) StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _stopping.CancelAsync();
+        if (_updates is not null) await _updates;
+        _stopping.Dispose();
+    }
+}

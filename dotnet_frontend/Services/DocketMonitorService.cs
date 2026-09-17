@@ -59,7 +59,7 @@ public sealed class RegulationsDocketSource(RegulationsGovClient client) : IDock
 public sealed class DocketMonitorService(
     IWorkspaceRepository workspace, IDocketCommentSource source, IAnalysisRunner runner,
     IAnalysisRepository analyses, ApiSettingsStore settings, IOptions<MonitoringOptions> options,
-    TimeProvider clock, ILogger<DocketMonitorService> logger)
+    TimeProvider clock, ILogger<DocketMonitorService> logger, NotificationChangeSignal notificationChanges)
 {
     public const string WatchKind = "watches";
     public const string NotificationKind = "notifications";
@@ -79,6 +79,17 @@ public sealed class DocketMonitorService(
                 ?? throw new InvalidOperationException("A notification index references a missing record."));
         }
         return new(items, page.ContinuationToken);
+    }
+
+    public async Task<WorkspaceItem> MarkNotificationReadAsync(WorkspaceItem item, CancellationToken ct = default)
+    {
+        if (item.Kind != NotificationKind)
+            throw new ArgumentException("Only an inbox notification can be marked read.", nameof(item));
+        var notification = WorkspaceJson.Read<DocketNotification>(item);
+        notification.ReadAt ??= clock.GetUtcNow();
+        var saved = await workspace.SaveAsync(NotificationKind, item.Id, WorkspaceJson.Write(notification), item.Version, ct);
+        notificationChanges.NotifyChanged();
+        return saved;
     }
 
     public async Task<IReadOnlyList<WatchItem>> ListAsync(CancellationToken ct = default)
@@ -287,9 +298,14 @@ public sealed class DocketMonitorService(
             CommentIds = comments, RunId = runId, CreatedAt = clock.GetUtcNow(),
         };
         var saved = await workspace.GetAsync(NotificationKind, id, ct);
+        var changed = false;
         if (saved is null)
         {
-            try { saved = await workspace.SaveAsync(NotificationKind, id, WorkspaceJson.Write(notification), null, ct); }
+            try
+            {
+                saved = await workspace.SaveAsync(NotificationKind, id, WorkspaceJson.Write(notification), null, ct);
+                changed = true;
+            }
             catch (WorkspaceConflictException)
             {
                 saved = await workspace.GetAsync(NotificationKind, id, ct)
@@ -300,9 +316,14 @@ public sealed class DocketMonitorService(
         var indexId = $"{long.MaxValue - timestamp:D19}-{id}";
         if (await workspace.GetAsync("notificationOrder", indexId, ct) is null)
         {
-            try { await workspace.SaveAsync("notificationOrder", indexId, WorkspaceJson.Write(new NotificationPointer(id)), null, ct); }
+            try
+            {
+                await workspace.SaveAsync("notificationOrder", indexId, WorkspaceJson.Write(new NotificationPointer(id)), null, ct);
+                changed = true;
+            }
             catch (WorkspaceConflictException) { logger.LogInformation("Notification index {NotificationId} was already created", id); }
         }
+        if (changed) notificationChanges.NotifyChanged();
     }
 
     public static bool ExpectedFailure(Exception ex) => ex is InvalidOperationException or ArgumentException or IOException
