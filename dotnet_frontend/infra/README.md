@@ -25,7 +25,7 @@ security, and troubleshooting. This README is the quick reference for files in `
 | Log Analytics workspace | Backing store for App Insights logs and metrics. |
 | Application Insights (workspace-based) | Telemetry for the web app. |
 | Key Vault (RBAC mode) | Stores the Regulations.gov API key and Foundry endpoint URL. Agent names/versions are non-secret app settings. |
-| App Service Plan (Linux B1) | Compute for the web app. Always-on is enabled for watchlist monitoring; larger SKUs add memory and CPU. |
+| App Service Plan (Linux P0v3) | Default production compute for the web app with Always On for watchlist monitoring. Basic B1 remains an explicit lower-cost option. |
 | App Service (Linux, .NET 9) | Hosts the Blazor Server app. Uses a system-assigned managed identity. |
 | Role assignments | Key Vault Secrets User plus conditional OCR, Blob, and provisioned-Cosmos data roles. |
 | `Microsoft.Web/sites/config` (appsettings) | Wires the app to Key Vault references and App Insights. Separate child resource so it deploys **after** the role assignment (avoids first-start race). |
@@ -42,10 +42,10 @@ Service quota in East US 2.
 
 ```pwsh
 azd env set AZURE_LOCATION eastus2      # preferred
-azd env set AZURE_LOCATION centralus    # fallback when eastus2 has no B1 quota
+azd env set AZURE_LOCATION centralus    # fallback when eastus2 has no dedicated-plan quota
 ```
 
-Dedicated (B1 and above) App Service plans consume a per-region VM quota that is often `0` on new
+Dedicated App Service plans consume a per-region VM quota that is often `0` on new
 or sandboxed subscriptions, even where Flex Consumption works. Always confirm before deploying:
 
 ```pwsh
@@ -245,7 +245,7 @@ restrictions and apply organizational private-network requirements.
 
 | SKU | ~Monthly cost |
 | --- | --- |
-| App Service Plan B1 (Linux) | ~$13 |
+| App Service Plan P0v3 (Linux) | Region-dependent; verify with the Azure Pricing Calculator |
 | Key Vault standard (no HSM) | < $1 |
 | Application Insights + Log Analytics (low volume) | ~$2-5 |
 | Blob payload storage (low volume) | < $1 |

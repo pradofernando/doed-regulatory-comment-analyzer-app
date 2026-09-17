@@ -9,7 +9,7 @@
 //   - Log Analytics workspace
 //   - Application Insights (workspace-based)
 //   - Key Vault (RBAC mode) with secrets for the API key and Foundry endpoint
-//   - App Service Plan (Linux B1)
+//   - App Service Plan (Linux P0v3)
 //   - App Service (Linux, .NET 9) with system-assigned managed identity
 //   - Role assignment: App Service MI -> Key Vault Secrets User (on the KV)
 //   - App settings (separate child resource that depends on the role assignment
@@ -30,9 +30,9 @@ param baseName string = 'doedweb'
 @description('Azure region for all resources. Preferred: eastus2. Some subscriptions have no dedicated App Service (B1+) quota in eastus2 — use centralus as the fallback. Verify with: az deployment group what-if.')
 param location string = resourceGroup().location
 
-@description('SKU for the Linux App Service Plan. B1 is sufficient for the workload; bump to P1v3 for more memory/CPU.')
+@description('SKU for the Linux App Service Plan. P0v3 is the production default.')
 @allowed([ 'B1', 'B2', 'B3', 'P0v3', 'P1v3', 'P2v3' ])
-param appServicePlanSku string = 'B1'
+param appServicePlanSku string = 'P0v3'
 
 @description('The Regulations.gov v4 API key. Stored as a Key Vault secret and consumed by the app via KV reference.')
 @secure()

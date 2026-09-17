@@ -1,4 +1,6 @@
-﻿<div class="brand-row">
+﻿@inject Microsoft.Extensions.Options.IOptions<FunctionAnalysisOptions> FunctionOptions
+
+<div class="brand-row">
     <a class="brand" href="">
         <span class="brand__mark" aria-hidden="true">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -84,7 +86,11 @@
 
     <div class="sidebar-footer">
         <div class="sidebar-footer__title">Backend</div>
-        <div class="sidebar-footer__hint">Override on the Settings page to point at a custom API.</div>
+        <div class="sidebar-footer__hint">
+            @(FunctionOptions.Value.Enabled
+                ? "Azure Function App"
+                : "Override on the Settings page to point at a custom API.")
+        </div>
     </div>
 
 </div>

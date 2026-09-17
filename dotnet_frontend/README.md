@@ -27,6 +27,11 @@ contract evaluation.
 | `/compare` | Compare two saved runs with source, scope, and configuration warnings. |
 | `/settings` | Override the API base URL, API key, and default document ID. Persists to `App_Data/api-settings.json`. |
 
+In Function-backed deployments, Settings shows only run preferences (document ID,
+batch size, validation). Connection, credential, agent and model controls are
+hidden because deployment owns that configuration. Standalone mode retains the
+direct-connection form. The sidebar's backend label reflects the selected mode.
+
 ## Runtime flow
 
 1. `RegulationsGovClient` retrieves comments and details.

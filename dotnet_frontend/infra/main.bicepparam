@@ -1,7 +1,7 @@
 using './main.bicep'
 
 param baseName = 'doedweb'
-param appServicePlanSku = 'B1'
+param appServicePlanSku = 'P0v3'
 
 // Preferred region is eastus2. If the subscription has no dedicated App Service (B1+)
 // quota there, set AZURE_LOCATION=centralus. Confirm with `az deployment group what-if`
@@ -37,7 +37,7 @@ param enableDocketMonitoring = readEnvironmentVariable('ENABLE_DOCKET_MONITORING
 param monitoringIntervalMinutes = int(readEnvironmentVariable('MONITORING_INTERVAL_MINUTES', '60'))
 param allowedClientNetworks = empty(readEnvironmentVariable('ALLOWED_CLIENT_CIDR', ''))
   ? []
-  : [readEnvironmentVariable('ALLOWED_CLIENT_CIDR')]
+  : [readEnvironmentVariable('ALLOWED_CLIENT_CIDR', '')]
 
 param enablePayloadStorage = readEnvironmentVariable('ENABLE_PAYLOAD_STORAGE', 'true') == 'true'
 param analysisPayloadBlobContainerUri = readEnvironmentVariable('ANALYSIS_PAYLOAD_BLOB_CONTAINER_URI', '')

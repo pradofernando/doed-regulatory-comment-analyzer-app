@@ -32,6 +32,9 @@ param(
     # =========================================================================
     [Parameter(Mandatory=$false)]
     [string]$Location = "eastus",  # <-- CHANGE THIS TO DEPLOY TO A DIFFERENT REGION
+
+    [Parameter(Mandatory=$false)]
+    [string]$SearchLocation = "",
     
     [Parameter(Mandatory=$true)]
     [string]$RegulationsGovApiKey,
@@ -76,6 +79,10 @@ param(
     [string]$MethodologySearchIndexName = "",
 
     [Parameter(Mandatory=$false)]
+    [ValidateSet('GlobalStandard', 'Standard', 'DataZoneStandard')]
+    [string]$EmbeddingSkuName = "GlobalStandard",
+
+    [Parameter(Mandatory=$false)]
     [string]$FoundryProjectEndpoint = "",
 
     [Parameter(Mandatory=$false)]
@@ -96,6 +103,10 @@ param(
     [Parameter(Mandatory=$false)]
     [string]$ExistingFunctionStorageAccountName = ""
 )
+
+if ([string]::IsNullOrWhiteSpace($SearchLocation)) {
+    $SearchLocation = $Location
+}
 
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
     $PSNativeCommandUseErrorActionPreference = $false
@@ -200,13 +211,16 @@ function Get-DeploymentResourceName {
         [string]$ResourceType,
 
         [Parameter(Mandatory=$true)]
-        [string]$NamePrefix
+        [string]$NamePrefix,
+
+        [switch]$ExactMatch
     )
 
+    $query = if ($ExactMatch) { "[?name=='$NamePrefix'].name | [0]" } else { "[?starts_with(name, '$NamePrefix')].name | [0]" }
     $resourceName = az resource list `
         --resource-group $ResourceGroupName `
         --resource-type $ResourceType `
-        --query "[?starts_with(name, '$NamePrefix')].name | [0]" `
+        --query $query `
         -o tsv 2>$null
 
     if ([string]::IsNullOrWhiteSpace($resourceName)) {
@@ -371,7 +385,7 @@ function Invoke-AgentCreationWorkflow {
         [string]$DeploymentOutputPath = ""
     )
 
-    $agentPromptsPath = Resolve-Path (Join-Path $PSScriptRoot "..\AGENT_PROMPTS.md")
+    $agentPromptsPath = Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, '..', 'AGENT_PROMPTS.md'))
     $agentDefinitions = @(
         [ordered]@{
             SectionName = 'CATEGORIZATION_AGENT'
@@ -415,11 +429,20 @@ function Invoke-AgentCreationWorkflow {
     Write-Host ""
     Write-Host "Foundry Project Endpoint: $AiEndpoint" -ForegroundColor Gray
 
-    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+    $repoRoot = Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, '..', '..'))
     $pythonExe = $AgentPythonExecutable
     if ([string]::IsNullOrWhiteSpace($pythonExe)) {
-        $pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
-        if (-not (Test-Path $pythonExe)) { $pythonExe = "python" }
+        $pythonExe = @(
+            [System.IO.Path]::Combine($repoRoot, '.venv', 'Scripts', 'python.exe'),
+            [System.IO.Path]::Combine($repoRoot, '.venv', 'bin', 'python')
+        ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        if ([string]::IsNullOrWhiteSpace($pythonExe)) {
+            $pythonCommand = Get-Command python3, python -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $pythonCommand) {
+                throw "Python 3 was not found. Install Python or specify AgentPythonExecutable before deploying."
+            }
+            $pythonExe = $pythonCommand.Source
+        }
     }
 
     $agentCreationRequirements = Join-Path $PSScriptRoot "requirements-agent-creation.txt"
@@ -449,7 +472,7 @@ function Invoke-AgentCreationWorkflow {
         }
     }
 
-    $definitionsFile = Join-Path $env:TEMP ("foundry-agent-definitions-{0}.json" -f ([guid]::NewGuid().ToString('N')))
+    $definitionsFile = Join-Path ([System.IO.Path]::GetTempPath()) ("foundry-agent-definitions-{0}.json" -f ([guid]::NewGuid().ToString('N')))
     $helperScript = Join-Path $PSScriptRoot "create_foundry_agents.py"
     $createdAgents = @{}
 
@@ -774,7 +797,7 @@ function New-FunctionZipPackage {
         [string]$FunctionAppDirectory
     )
 
-    $packageRoot = Join-Path $env:TEMP ("doed-function-package-{0}" -f ([guid]::NewGuid().ToString('N')))
+    $packageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("doed-function-package-{0}" -f ([guid]::NewGuid().ToString('N')))
     $packageSource = Join-Path $packageRoot "src"
     $zipPath = Join-Path $packageRoot "functionapp.zip"
 
@@ -792,14 +815,15 @@ function New-FunctionZipPackage {
         Copy-Item -LiteralPath $source -Destination $packageSource -ErrorAction Stop
     }
 
-    Compress-Archive -Path (Join-Path $packageSource '*') -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($packageSource, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
     return @{
         PackageRoot = $packageRoot
         ZipPath = $zipPath
     }
 }
 
-function Publish-FlexFunctionApp {
+function Publish-FunctionAppPackage {
     param(
         [Parameter(Mandatory=$true)]
         [string]$FunctionAppName,
@@ -813,7 +837,7 @@ function Publish-FlexFunctionApp {
 
     $package = New-FunctionZipPackage -FunctionAppDirectory $FunctionAppDirectory
     try {
-        Write-Host "Deploying Flex Consumption package with Azure CLI remote build..." -ForegroundColor Yellow
+        Write-Host "Deploying Function App package with Azure CLI remote build..." -ForegroundColor Yellow
         az functionapp deployment source config-zip `
             --name $FunctionAppName `
             --resource-group $ResourceGroupName `
@@ -826,6 +850,13 @@ function Publish-FlexFunctionApp {
             Remove-Item $package.PackageRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
+}
+
+function Test-FunctionDeploymentNotReady {
+    param([AllowEmptyString()][string]$Output)
+
+    return $Output -match 'ResourceNotFound' `
+        -or $Output -match "Microsoft\.Web/sites/.+ was not found"
 }
 
 function Ensure-StoragePublicNetworkAccess {
@@ -915,6 +946,8 @@ Write-Host ""
 Write-Host "Subscription: $($account.name)" -ForegroundColor White
 Write-Host "Resource Group: $ResourceGroupName" -ForegroundColor White
 Write-Host "Location: $Location" -ForegroundColor White
+Write-Host "AI Search Location: $SearchLocation" -ForegroundColor White
+Write-Host "Embedding Deployment SKU: $EmbeddingSkuName" -ForegroundColor White
 Write-Host "Document ID: $DocumentId" -ForegroundColor White
 if (-not [string]::IsNullOrWhiteSpace($FoundryProjectEndpoint)) {
     Write-Host "Foundry Project Endpoint: $FoundryProjectEndpoint" -ForegroundColor White
@@ -940,7 +973,10 @@ $keyVaultNamePrefix = "kv-$BaseName-$DeploymentSuffix"
 $functionAppNamePrefix = if ($UsePremium) { "func-$BaseName-prem-$DeploymentSuffix" } else { "func-$BaseName-$DeploymentSuffix" }
 $aiFoundryNamePrefix = "aif-$BaseName-$DeploymentSuffix"
 $documentIntelligenceNamePrefix = "docint-$BaseName-$DeploymentSuffix"
-$searchServiceNamePrefix = "srch-$BaseName-$DeploymentSuffix"
+$normalizedLocation = $Location.Replace(' ', '').ToLowerInvariant()
+$normalizedSearchLocation = $SearchLocation.Replace(' ', '').ToLowerInvariant()
+$searchLocationNamePart = if ($normalizedSearchLocation -eq $normalizedLocation) { '' } else { "-$normalizedSearchLocation" }
+$searchServiceNamePrefix = "srch-$BaseName-$DeploymentSuffix$searchLocationNamePart"
 $storageAccountNamePrefix = ("st{0}{1}" -f $BaseName, $DeploymentSuffix).Replace('-', '')
 
 if ([string]::IsNullOrWhiteSpace($ExistingFunctionStorageAccountName)) {
@@ -1003,10 +1039,16 @@ function Invoke-InfrastructureDeployment {
         [string]$Location,
 
         [Parameter(Mandatory=$true)]
+        [string]$SearchLocation,
+
+        [Parameter(Mandatory=$true)]
         [int]$GptCapacity,
 
         [Parameter(Mandatory=$true)]
         [int]$EmbeddingCapacity,
+
+        [Parameter(Mandatory=$true)]
+        [string]$EmbeddingSkuName,
 
         [Parameter(Mandatory=$true)]
         [string]$RegulationsGovApiKey,
@@ -1018,9 +1060,11 @@ function Invoke-InfrastructureDeployment {
         [int]$BatchSize,
 
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$DeployerPrincipalId,
 
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$DeployerPrincipalType,
 
         [Parameter(Mandatory=$true)]
@@ -1049,11 +1093,13 @@ function Invoke-InfrastructureDeployment {
         --parameters baseName=$BaseName `
         --parameters deploymentSuffix=$DeploymentSuffix `
         --parameters location=$Location `
+        --parameters searchLocation=$SearchLocation `
         --parameters gptCapacity=$GptCapacity `
         --parameters embeddingCapacity=$EmbeddingCapacity `
         --parameters preferredAgentModelDeploymentName=$AgentModelName agentModelName=$AgentModelName agentModelVersion=$AgentModelVersion agentModelSku=$AgentModelSku `
         --parameters enableMethodologySearch=$($EnableMethodologySearch.IsPresent.ToString().ToLowerInvariant()) `
         --parameters enableScheduledAnalysis=$($EnableScheduledAnalysis.IsPresent.ToString().ToLowerInvariant()) `
+        --parameters embeddingSkuName=$EmbeddingSkuName `
         --parameters regulationsGovApiKey=$RegulationsGovApiKey `
         --parameters documentId=$DocumentId `
         --parameters batchSize=$BatchSize `
@@ -1084,10 +1130,16 @@ function Test-InfrastructureDeployment {
         [string]$Location,
 
         [Parameter(Mandatory=$true)]
+        [string]$SearchLocation,
+
+        [Parameter(Mandatory=$true)]
         [int]$GptCapacity,
 
         [Parameter(Mandatory=$true)]
         [int]$EmbeddingCapacity,
+
+        [Parameter(Mandatory=$true)]
+        [string]$EmbeddingSkuName,
 
         [Parameter(Mandatory=$true)]
         [string]$RegulationsGovApiKey,
@@ -1099,9 +1151,11 @@ function Test-InfrastructureDeployment {
         [int]$BatchSize,
 
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$DeployerPrincipalId,
 
         [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
         [string]$DeployerPrincipalType,
 
         [Parameter(Mandatory=$true)]
@@ -1129,11 +1183,13 @@ function Test-InfrastructureDeployment {
         --parameters baseName=$BaseName `
         --parameters deploymentSuffix=$DeploymentSuffix `
         --parameters location=$Location `
+        --parameters searchLocation=$SearchLocation `
         --parameters gptCapacity=$GptCapacity `
         --parameters embeddingCapacity=$EmbeddingCapacity `
         --parameters preferredAgentModelDeploymentName=$AgentModelName agentModelName=$AgentModelName agentModelVersion=$AgentModelVersion agentModelSku=$AgentModelSku `
         --parameters enableMethodologySearch=$($EnableMethodologySearch.IsPresent.ToString().ToLowerInvariant()) `
         --parameters enableScheduledAnalysis=$($EnableScheduledAnalysis.IsPresent.ToString().ToLowerInvariant()) `
+        --parameters embeddingSkuName=$EmbeddingSkuName `
         --parameters regulationsGovApiKey=$RegulationsGovApiKey `
         --parameters documentId=$DocumentId `
         --parameters batchSize=$BatchSize `
@@ -1153,13 +1209,16 @@ function Test-InfrastructureDeployment {
 }
 
 $hostingMode = if ($UsePremium) { 'Premium' } else { 'FlexConsumption' }
+$templateFile = Join-Path $PSScriptRoot "main.bicep"
 
 $validationAttempt = Test-InfrastructureDeployment `
     -ResourceGroupName $ResourceGroupName `
-    -TemplateFile "$PSScriptRoot\main.bicep" `
+    -TemplateFile $templateFile `
     -Location $Location `
+    -SearchLocation $SearchLocation `
     -GptCapacity $GptCapacity `
     -EmbeddingCapacity $EmbeddingCapacity `
+    -EmbeddingSkuName $EmbeddingSkuName `
     -RegulationsGovApiKey $RegulationsGovApiKey `
     -DocumentId $DocumentId `
     -BatchSize $BatchSize `
@@ -1181,10 +1240,12 @@ if ($validationAttempt.ExitCode -ne 0) {
         $hostingMode = 'FlexConsumption'
         $validationAttempt = Test-InfrastructureDeployment `
             -ResourceGroupName $ResourceGroupName `
-            -TemplateFile "$PSScriptRoot\main.bicep" `
+            -TemplateFile $templateFile `
             -Location $Location `
+            -SearchLocation $SearchLocation `
             -GptCapacity $GptCapacity `
             -EmbeddingCapacity $EmbeddingCapacity `
+            -EmbeddingSkuName $EmbeddingSkuName `
             -RegulationsGovApiKey $RegulationsGovApiKey `
             -DocumentId $DocumentId `
             -BatchSize $BatchSize `
@@ -1221,10 +1282,12 @@ $deploymentName = "doed-comments-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 $deploymentAttempt = Invoke-InfrastructureDeployment `
     -DeploymentName $deploymentName `
     -ResourceGroupName $ResourceGroupName `
-    -TemplateFile "$PSScriptRoot\main.bicep" `
+    -TemplateFile $templateFile `
     -Location $Location `
+    -SearchLocation $SearchLocation `
     -GptCapacity $GptCapacity `
     -EmbeddingCapacity $EmbeddingCapacity `
+    -EmbeddingSkuName $EmbeddingSkuName `
     -RegulationsGovApiKey $RegulationsGovApiKey `
     -DocumentId $DocumentId `
     -BatchSize $BatchSize `
@@ -1285,10 +1348,12 @@ if ($LASTEXITCODE -ne 0) {
         $deploymentAttempt = Invoke-InfrastructureDeployment `
             -DeploymentName $deploymentName `
             -ResourceGroupName $ResourceGroupName `
-            -TemplateFile "$PSScriptRoot\main.bicep" `
+            -TemplateFile $templateFile `
             -Location $Location `
+            -SearchLocation $SearchLocation `
             -GptCapacity $GptCapacity `
             -EmbeddingCapacity $EmbeddingCapacity `
+            -EmbeddingSkuName $EmbeddingSkuName `
             -RegulationsGovApiKey $RegulationsGovApiKey `
             -DocumentId $DocumentId `
             -BatchSize $BatchSize `
@@ -1356,7 +1421,9 @@ if ([string]::IsNullOrWhiteSpace($functionAppName)) {
     $storageAccountName = Get-DeploymentResourceName -ResourceGroupName $ResourceGroupName -ResourceType 'Microsoft.Storage/storageAccounts' -NamePrefix $storageAccountNamePrefix
     $aiFoundryName = Get-DeploymentResourceName -ResourceGroupName $ResourceGroupName -ResourceType 'Microsoft.CognitiveServices/accounts' -NamePrefix $aiFoundryNamePrefix
     $documentIntelligenceName = Get-DeploymentResourceName -ResourceGroupName $ResourceGroupName -ResourceType 'Microsoft.CognitiveServices/accounts' -NamePrefix $documentIntelligenceNamePrefix
-    $searchServiceName = Get-DeploymentResourceName -ResourceGroupName $ResourceGroupName -ResourceType 'Microsoft.Search/searchServices' -NamePrefix $searchServiceNamePrefix
+    $searchServiceName = if ($EnableMethodologySearch) {
+        Get-DeploymentResourceName -ResourceGroupName $ResourceGroupName -ResourceType 'Microsoft.Search/searchServices' -NamePrefix $searchServiceNamePrefix -ExactMatch
+    } else { '' }
 
     $aiProjectName = "aiproj-$BaseName"
 
@@ -1527,16 +1594,8 @@ Write-Host "Publishing Function App code..." -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Yellow
 Write-Host ""
 
-$funcAppDir = Join-Path $PSScriptRoot "..\doed_regulatory_comments_func"
+$funcAppDir = [System.IO.Path]::Combine($PSScriptRoot, '..', 'doed_regulatory_comments_func')
 $funcAppDir = Resolve-Path $funcAppDir
-
-# Check if Azure Functions Core Tools is installed
-if (-not (Get-Command func -ErrorAction SilentlyContinue)) {
-    Write-Host "Azure Functions Core Tools not found. Installing..." -ForegroundColor Yellow
-    winget install --id Microsoft.AzureFunctionsCoreTools --accept-source-agreements --accept-package-agreements
-    # Refresh PATH
-    $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH', 'User')
-}
 
 Push-Location $funcAppDir
 try {
@@ -1547,16 +1606,17 @@ try {
 
     for ($publishAttempt = 1; $publishAttempt -le $maxPublishAttempts; $publishAttempt++) {
         Write-Host "Publishing to $functionAppName (attempt $publishAttempt of $maxPublishAttempts)..." -ForegroundColor Yellow
-        $publishLogPath = Join-Path $env:TEMP ("func-publish-{0}.log" -f ([guid]::NewGuid().ToString('N')))
+        $publishLogPath = Join-Path ([System.IO.Path]::GetTempPath()) ("func-publish-{0}.log" -f ([guid]::NewGuid().ToString('N')))
         try {
             if ($hostingMode -eq 'FlexConsumption') {
                 $script:LastFlexPublishExitCode = 1
                 Ensure-StoragePublicNetworkAccess -StorageAccountName $storageAccountName -ResourceGroupName $ResourceGroupName
-                Publish-FlexFunctionApp -FunctionAppName $functionAppName -ResourceGroupName $ResourceGroupName -FunctionAppDirectory $funcAppDir 2>&1 | Tee-Object -FilePath $publishLogPath
+                Publish-FunctionAppPackage -FunctionAppName $functionAppName -ResourceGroupName $ResourceGroupName -FunctionAppDirectory $funcAppDir 2>&1 | Tee-Object -FilePath $publishLogPath
                 $publishExitCode = $script:LastFlexPublishExitCode
             } else {
-                func azure functionapp publish $functionAppName --python 2>&1 | Tee-Object -FilePath $publishLogPath
-                $publishExitCode = $LASTEXITCODE
+                $script:LastFlexPublishExitCode = 1
+                Publish-FunctionAppPackage -FunctionAppName $functionAppName -ResourceGroupName $ResourceGroupName -FunctionAppDirectory $funcAppDir 2>&1 | Tee-Object -FilePath $publishLogPath
+                $publishExitCode = $script:LastFlexPublishExitCode
             }
             $lastPublishOutput = if (Test-Path $publishLogPath) { Get-Content -Path $publishLogPath -Raw } else { '' }
         } finally {
@@ -1573,6 +1633,13 @@ try {
         $deploymentBusy = $lastPublishOutput -match 'another deployment in progress' `
             -or $lastPublishOutput -match 'Deployment was cancelled' `
             -or $lastPublishOutput -match 'SCM site is currently busy'
+        $resourceNotReady = Test-FunctionDeploymentNotReady -Output $lastPublishOutput
+
+        if ($resourceNotReady -and $publishAttempt -lt $maxPublishAttempts) {
+            Write-Host "Function App deployment endpoint is not available yet; waiting 30 seconds before retrying..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 30
+            continue
+        }
 
         if ($deploymentBusy -and $publishAttempt -lt $maxPublishAttempts) {
             if (-not $deploymentBusyChoiceMade) {
@@ -1603,14 +1670,7 @@ try {
         Write-Host "Function App published successfully!" -ForegroundColor Green
     } else {
         Write-Host ""
-        Write-Host "Function App publish failed. You can retry manually:" -ForegroundColor Red
-        if ($hostingMode -eq 'FlexConsumption') {
-            Write-Host "  cd $funcAppDir" -ForegroundColor Gray
-            Write-Host "  Remove unsupported Flex app settings, wait for SCM propagation, then run az functionapp deployment source config-zip --build-remote true" -ForegroundColor Gray
-        } else {
-            Write-Host "  cd $funcAppDir" -ForegroundColor Gray
-            Write-Host "  func azure functionapp publish $functionAppName --python" -ForegroundColor Gray
-        }
+        Write-Host "Function App publish failed. Re-run deploy.ps1 to retry the Azure CLI ZIP deployment." -ForegroundColor Red
         exit 1
     }
 } finally {

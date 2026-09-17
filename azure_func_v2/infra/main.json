@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "7662204421233793908"
+      "templateHash": "4233156136325421044"
     }
   },
   "parameters": {
@@ -27,6 +27,7 @@
         "westus",
         "westus2",
         "westus3",
+        "centralus",
         "northcentralus",
         "southcentralus",
         "swedencentral",
@@ -38,21 +39,45 @@
         "description": "Azure region for all resources. Must support Azure OpenAI and Azure AI Foundry."
       }
     },
+    "searchLocation": {
+      "type": "string",
+      "defaultValue": "[parameters('location')]",
+      "metadata": {
+        "description": "Azure region for AI Search. Defaults to the Function stack region. A different region creates a region-suffixed Search service for side-by-side migration."
+      }
+    },
     "gptCapacity": {
       "type": "int",
       "defaultValue": 10,
       "minValue": 1,
       "maxValue": 100,
       "metadata": {
-        "description": "Default GPT-4o model deployment capacity in thousands of tokens per minute."
+        "description": "Selected model deployment capacity in thousands of tokens per minute."
       }
     },
     "preferredAgentModelDeploymentName": {
       "type": "string",
-      "defaultValue": "gpt-5.4",
+      "defaultValue": "gpt-5.5",
       "metadata": {
-        "description": "Preferred model deployment for Foundry agents. The deployment script falls back to the Bicep-managed GPT-4o deployment when this model is unavailable."
+        "description": "Required model deployment for all four agents. Deployment fails rather than falling back to another model."
       }
+    },
+    "agentModelName": {
+      "type": "string",
+      "defaultValue": "gpt-5.5"
+    },
+    "agentModelVersion": {
+      "type": "string",
+      "defaultValue": "2026-04-24"
+    },
+    "agentModelSku": {
+      "type": "string",
+      "defaultValue": "GlobalStandard",
+      "allowedValues": [
+        "GlobalStandard",
+        "DataZoneStandard",
+        "Standard"
+      ]
     },
     "embeddingCapacity": {
       "type": "int",
@@ -61,6 +86,25 @@
       "maxValue": 100,
       "metadata": {
         "description": "text-embedding-3-large deployment capacity in thousands of tokens per minute."
+      }
+    },
+    "enableMethodologySearch": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Provision optional methodology Search and embeddings. Leave disabled until a knowledge index is needed."
+      }
+    },
+    "embeddingSkuName": {
+      "type": "string",
+      "defaultValue": "GlobalStandard",
+      "allowedValues": [
+        "GlobalStandard",
+        "Standard",
+        "DataZoneStandard"
+      ],
+      "metadata": {
+        "description": "Deployment SKU for text-embedding-3-large. Use Standard or DataZoneStandard when GlobalStandard quota is unavailable."
       }
     },
     "regulationsGovApiKey": {
@@ -83,6 +127,13 @@
       "maxValue": 20,
       "metadata": {
         "description": "Number of comments to process per batch for AI grouping analysis"
+      }
+    },
+    "enableScheduledAnalysis": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable the legacy daily AI analysis timer. Disabled by default to avoid unrequested model usage."
       }
     },
     "deployerPrincipalId": {
@@ -189,7 +240,10 @@
     "logAnalyticsName": "[format('law-{0}', parameters('baseName'))]",
     "aiFoundryName": "[format('aif-{0}-{1}', parameters('baseName'), variables('uniqueSuffix'))]",
     "documentIntelligenceName": "[format('docint-{0}-{1}', parameters('baseName'), variables('uniqueSuffix'))]",
-    "searchServiceName": "[format('srch-{0}-{1}', parameters('baseName'), variables('uniqueSuffix'))]",
+    "normalizedLocation": "[toLower(replace(parameters('location'), ' ', ''))]",
+    "normalizedSearchLocation": "[toLower(replace(parameters('searchLocation'), ' ', ''))]",
+    "searchLocationNamePart": "[if(equals(variables('normalizedSearchLocation'), variables('normalizedLocation')), '', format('-{0}', variables('normalizedSearchLocation')))]",
+    "searchServiceName": "[format('srch-{0}-{1}{2}', parameters('baseName'), variables('uniqueSuffix'), variables('searchLocationNamePart'))]",
     "aiProjectName": "[format('aiproj-{0}', parameters('baseName'))]",
     "foundryProjectEndpoint": "[format('https://{0}.cognitiveservices.azure.com/api/projects/{1}', variables('aiFoundryName'), variables('aiProjectName'))]",
     "usePremiumHosting": "[equals(parameters('hostingMode'), 'Premium')]",
@@ -327,10 +381,11 @@
       }
     },
     {
+      "condition": "[parameters('enableMethodologySearch')]",
       "type": "Microsoft.Search/searchServices",
       "apiVersion": "2022-09-01",
       "name": "[variables('searchServiceName')]",
-      "location": "[parameters('location')]",
+      "location": "[parameters('searchLocation')]",
       "tags": "[variables('tags')]",
       "identity": {
         "type": "SystemAssigned"
@@ -388,16 +443,16 @@
     {
       "type": "Microsoft.CognitiveServices/accounts/deployments",
       "apiVersion": "2025-06-01",
-      "name": "[format('{0}/{1}', variables('aiFoundryName'), 'gpt-4o')]",
+      "name": "[format('{0}/{1}', variables('aiFoundryName'), parameters('preferredAgentModelDeploymentName'))]",
       "sku": {
-        "name": "Standard",
+        "name": "[parameters('agentModelSku')]",
         "capacity": "[parameters('gptCapacity')]"
       },
       "properties": {
         "model": {
           "format": "OpenAI",
-          "name": "gpt-4o",
-          "version": "2024-11-20"
+          "name": "[parameters('agentModelName')]",
+          "version": "[parameters('agentModelVersion')]"
         }
       },
       "dependsOn": [
@@ -405,11 +460,12 @@
       ]
     },
     {
+      "condition": "[parameters('enableMethodologySearch')]",
       "type": "Microsoft.CognitiveServices/accounts/deployments",
       "apiVersion": "2025-06-01",
       "name": "[format('{0}/{1}', variables('aiFoundryName'), 'text-embedding-3-large')]",
       "sku": {
-        "name": "GlobalStandard",
+        "name": "[parameters('embeddingSkuName')]",
         "capacity": "[parameters('embeddingCapacity')]"
       },
       "properties": {
@@ -421,7 +477,7 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiFoundryName'))]",
-        "[resourceId('Microsoft.CognitiveServices/accounts/deployments', variables('aiFoundryName'), 'gpt-4o')]"
+        "[resourceId('Microsoft.CognitiveServices/accounts/deployments', variables('aiFoundryName'), parameters('preferredAgentModelDeploymentName'))]"
       ]
     },
     {
@@ -465,7 +521,7 @@
             ],
             "supportCredentials": false
           },
-          "appSettings": "[concat(variables('premiumRuntimeAppSettings'), createArray(createObject('name', 'AzureWebJobsStorage__accountName', 'value', variables('storageAccountName')), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'APPINSIGHTS_INSTRUMENTATIONKEY', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString), createObject('name', 'REGULATIONS_GOV_API_KEY', 'value', format('@Microsoft.KeyVault(VaultName={0};SecretName=regulations-gov-api-key)', variables('keyVaultName'))), createObject('name', 'DOCUMENT_ID', 'value', parameters('documentId')), createObject('name', 'BATCH_SIZE', 'value', string(parameters('batchSize'))), createObject('name', 'MAX_COMMENTS', 'value', ''), createObject('name', 'AZURE_STORAGE_ACCOUNT_NAME', 'value', variables('storageAccountName')), createObject('name', 'COSMOS_ENDPOINT', 'value', if(empty(parameters('cosmosAccountName')), '', format('https://{0}.documents.azure.com:443/', parameters('cosmosAccountName')))), createObject('name', 'COSMOS_DATABASE_NAME', 'value', parameters('cosmosDatabaseName')), createObject('name', 'COSMOS_RUNS_CONTAINER_NAME', 'value', parameters('cosmosRunsContainerName')), createObject('name', 'COSMOS_SUMMARIES_CONTAINER_NAME', 'value', parameters('cosmosSummariesContainerName')), createObject('name', 'ANALYSIS_PAYLOAD_CONTAINER_NAME', 'value', 'analysis-run-payloads'), createObject('name', 'ANALYSIS_PAYLOAD_OFFLOAD_THRESHOLD_BYTES', 'value', '524288'), createObject('name', 'DOCUMENTINTELLIGENCE_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('documentIntelligenceName')), '2023-10-01-preview').endpoint), createObject('name', 'FOUNDRY_PROJECT_ENDPOINT', 'value', variables('foundryProjectEndpoint')), createObject('name', 'CATEGORIZATION_AGENT_NAME', 'value', 'RegulatoryCommentCategorizationAgent'), createObject('name', 'CATEGORIZATION_AGENT_VERSION', 'value', '1'), createObject('name', 'CATEGORIZATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'GROUPING_AGENT_NAME', 'value', 'RegulatoryCommentGroupingAgent'), createObject('name', 'GROUPING_AGENT_VERSION', 'value', '1'), createObject('name', 'GROUPING_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'VALIDATION_AGENT_NAME', 'value', ''), createObject('name', 'VALIDATION_AGENT_VERSION', 'value', '1'), createObject('name', 'VALIDATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'FOLLOWUP_AGENT_NAME', 'value', 'RegulatoryCommentFollowUpAgent'), createObject('name', 'FOLLOWUP_AGENT_VERSION', 'value', '1'), createObject('name', 'FOLLOWUP_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'ALLOWED_MODEL_DEPLOYMENTS', 'value', join(union(createArray(parameters('preferredAgentModelDeploymentName')), createArray('gpt-4o')), ','))))]"
+          "appSettings": "[concat(variables('premiumRuntimeAppSettings'), createArray(createObject('name', 'AzureWebJobsStorage__accountName', 'value', variables('storageAccountName')), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'APPINSIGHTS_INSTRUMENTATIONKEY', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString), createObject('name', 'REGULATIONS_GOV_API_KEY', 'value', format('@Microsoft.KeyVault(VaultName={0};SecretName=regulations-gov-api-key)', variables('keyVaultName'))), createObject('name', 'DOCUMENT_ID', 'value', parameters('documentId')), createObject('name', 'BATCH_SIZE', 'value', string(parameters('batchSize'))), createObject('name', 'MAX_COMMENTS', 'value', ''), createObject('name', 'AzureWebJobs.regulatory_comments_daily.Disabled', 'value', string(not(parameters('enableScheduledAnalysis')))), createObject('name', 'AZURE_STORAGE_ACCOUNT_NAME', 'value', variables('storageAccountName')), createObject('name', 'COSMOS_ENDPOINT', 'value', if(empty(parameters('cosmosAccountName')), '', format('https://{0}.documents.azure.com:443/', parameters('cosmosAccountName')))), createObject('name', 'COSMOS_DATABASE_NAME', 'value', parameters('cosmosDatabaseName')), createObject('name', 'COSMOS_RUNS_CONTAINER_NAME', 'value', parameters('cosmosRunsContainerName')), createObject('name', 'COSMOS_SUMMARIES_CONTAINER_NAME', 'value', parameters('cosmosSummariesContainerName')), createObject('name', 'ANALYSIS_PAYLOAD_CONTAINER_NAME', 'value', 'analysis-run-payloads'), createObject('name', 'ANALYSIS_PAYLOAD_OFFLOAD_THRESHOLD_BYTES', 'value', '524288'), createObject('name', 'DOCUMENTINTELLIGENCE_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('documentIntelligenceName')), '2023-10-01-preview').endpoint), createObject('name', 'FOUNDRY_PROJECT_ENDPOINT', 'value', variables('foundryProjectEndpoint')), createObject('name', 'CATEGORIZATION_AGENT_NAME', 'value', 'RegulatoryCommentCategorizationAgent'), createObject('name', 'CATEGORIZATION_AGENT_VERSION', 'value', '1'), createObject('name', 'CATEGORIZATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'GROUPING_AGENT_NAME', 'value', 'RegulatoryCommentGroupingAgent'), createObject('name', 'GROUPING_AGENT_VERSION', 'value', '1'), createObject('name', 'GROUPING_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'VALIDATION_AGENT_NAME', 'value', ''), createObject('name', 'VALIDATION_AGENT_VERSION', 'value', '1'), createObject('name', 'VALIDATION_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'FOLLOWUP_AGENT_NAME', 'value', 'RegulatoryCommentFollowUpAgent'), createObject('name', 'FOLLOWUP_AGENT_VERSION', 'value', '1'), createObject('name', 'FOLLOWUP_AGENT_MODEL', 'value', parameters('preferredAgentModelDeploymentName')), createObject('name', 'ALLOWED_MODEL_DEPLOYMENTS', 'value', join(union(createArray(parameters('preferredAgentModelDeploymentName')), createArray(parameters('preferredAgentModelDeploymentName'))), ','))))]"
         }
       },
       "dependsOn": [
@@ -473,7 +529,9 @@
         "[resourceId('Microsoft.CognitiveServices/accounts', variables('documentIntelligenceName'))]",
         "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
-        "[resourceId('Microsoft.CognitiveServices/accounts/deployments', variables('aiFoundryName'), 'gpt-4o')]"
+        "[resourceId('Microsoft.CognitiveServices/accounts/deployments', variables('aiFoundryName'), parameters('preferredAgentModelDeploymentName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', variables('storageAccountName'), 'default', 'function-releases')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -531,7 +589,8 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -544,20 +603,25 @@
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
         "principalId": "[parameters('deployerPrincipalId')]",
         "principalType": "[parameters('deployerPrincipalType')]"
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
     },
     {
+      "condition": "[parameters('enableMethodologySearch')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
       "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), resourceId('Microsoft.Search/searchServices', variables('searchServiceName')), 'Storage Blob Data Reader')]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')]",
-        "principalId": "[reference(resourceId('Microsoft.Search/searchServices', variables('searchServiceName')), '2022-09-01', 'full').identity.principalId]",
+        "principalId": "[if(parameters('enableMethodologySearch'), coalesce(tryGet(tryGet(if(parameters('enableMethodologySearch'), reference(resourceId('Microsoft.Search/searchServices', variables('searchServiceName')), '2022-09-01', 'full'), null()), 'identity'), 'principalId'), ''), '')]",
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]"
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -571,7 +635,8 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -584,7 +649,10 @@
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
         "principalId": "[parameters('deployerPrincipalId')]",
         "principalType": "[parameters('deployerPrincipalType')]"
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
@@ -597,7 +665,8 @@
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
+        "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
       ]
     },
     {
@@ -610,7 +679,10 @@
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
         "principalId": "[parameters('deployerPrincipalId')]",
         "principalType": "[parameters('deployerPrincipalType')]"
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
     },
     {
       "type": "Microsoft.Authorization/roleAssignments",
@@ -673,13 +745,14 @@
       ]
     },
     {
+      "condition": "[parameters('enableMethodologySearch')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiFoundryName'))]",
       "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', variables('aiFoundryName')), resourceId('Microsoft.Search/searchServices', variables('searchServiceName')), 'Cognitive Services OpenAI User')]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
-        "principalId": "[reference(resourceId('Microsoft.Search/searchServices', variables('searchServiceName')), '2022-09-01', 'full').identity.principalId]",
+        "principalId": "[if(parameters('enableMethodologySearch'), coalesce(tryGet(tryGet(if(parameters('enableMethodologySearch'), reference(resourceId('Microsoft.Search/searchServices', variables('searchServiceName')), '2022-09-01', 'full'), null()), 'identity'), 'principalId'), ''), '')]",
         "principalType": "ServicePrincipal"
       },
       "dependsOn": [
@@ -733,6 +806,7 @@
       ]
     },
     {
+      "condition": "[parameters('enableMethodologySearch')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
@@ -748,6 +822,7 @@
       ]
     },
     {
+      "condition": "[parameters('enableMethodologySearch')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
@@ -817,28 +892,28 @@
       "metadata": {
         "description": "Azure AI Search service name"
       },
-      "value": "[variables('searchServiceName')]"
+      "value": "[if(parameters('enableMethodologySearch'), variables('searchServiceName'), '')]"
     },
     "searchServiceEndpoint": {
       "type": "string",
       "metadata": {
         "description": "Azure AI Search endpoint"
       },
-      "value": "[format('https://{0}.search.windows.net', variables('searchServiceName'))]"
+      "value": "[if(parameters('enableMethodologySearch'), format('https://{0}.search.windows.net', variables('searchServiceName')), '')]"
     },
     "modelDeploymentName": {
       "type": "string",
       "metadata": {
         "description": "Model deployment name"
       },
-      "value": "gpt-4o"
+      "value": "[parameters('preferredAgentModelDeploymentName')]"
     },
     "embeddingModelDeploymentName": {
       "type": "string",
       "metadata": {
         "description": "Embedding model deployment name"
       },
-      "value": "text-embedding-3-large"
+      "value": "[if(parameters('enableMethodologySearch'), 'text-embedding-3-large', '')]"
     },
     "appInsightsKey": {
       "type": "string",

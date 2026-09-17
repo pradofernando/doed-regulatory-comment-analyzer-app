@@ -84,7 +84,7 @@ class DeploymentContractTests(unittest.TestCase):
                 New-FunctionZipPackage -FunctionAppDirectory $env:TEST_SOURCE | ConvertTo-Json -Compress
                 """,
                 FUNCTION_SCRIPT=str(FUNCTION_SCRIPT), TEST_SOURCE=str(source),
-                TEMP=directory, TMP=directory,
+                TEMP=directory, TMP=directory, TMPDIR=directory,
             )
             package = json.loads(result)
             with zipfile.ZipFile(package["ZipPath"]) as archive:
@@ -114,6 +114,114 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'", template)
         self.assertIn("roleDefinitions', cognitiveServicesUserRoleId)", template)
         self.assertNotIn("b59867f0-fa02-499b-be73-45a86b5b3e1c", template)
+
+    def test_upstream_search_and_embedding_options_preserve_explicit_model_and_safety_flags(self):
+        result = self.invoke_powershell(
+            """
+            $ErrorActionPreference = 'Stop'
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+                $env:FUNCTION_SCRIPT, [ref]$null, [ref]$null)
+            foreach ($name in @('Test-InfrastructureDeployment', 'Invoke-InfrastructureDeployment')) {
+                $function = $ast.Find({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+                }, $true)
+                . ([scriptblock]::Create($function.Extent.Text))
+            }
+            function az { $script:CapturedArguments = @($args); $global:LASTEXITCODE = 0; '{}' }
+            $AgentModelName = 'gpt-5.5'
+            $AgentModelVersion = '2026-04-24'
+            $AgentModelSku = 'GlobalStandard'
+            [switch]$EnableMethodologySearch = $false
+            [switch]$EnableScheduledAnalysis = $false
+            $parameters = @{
+                ResourceGroupName = 'synthetic'
+                TemplateFile = 'synthetic.bicep'
+                Location = 'eastus'
+                SearchLocation = 'centralus'
+                GptCapacity = 10
+                EmbeddingCapacity = 5
+                EmbeddingSkuName = 'Standard'
+                RegulationsGovApiKey = 'synthetic-not-a-secret'
+                DocumentId = 'ED-SYNTHETIC'
+                BatchSize = 5
+                DeployerPrincipalId = ''
+                DeployerPrincipalType = ''
+                BaseName = 'synthetic'
+                DeploymentSuffix = 'synthetic'
+                HostingMode = 'FlexConsumption'
+            }
+            $validation = Test-InfrastructureDeployment @parameters
+            $validatedArguments = $script:CapturedArguments
+            $deployment = Invoke-InfrastructureDeployment @parameters -DeploymentName 'synthetic'
+            if ($validation.ExitCode -ne 0 -or $deployment.ExitCode -ne 0) { throw 'Mocked commands failed.' }
+            @{ validation = $validatedArguments; deployment = $script:CapturedArguments } | ConvertTo-Json -Compress
+            """,
+            FUNCTION_SCRIPT=str(FUNCTION_SCRIPT),
+        )
+        for arguments in json.loads(result).values():
+            for expected in ("searchLocation=centralus", "embeddingSkuName=Standard",
+                             "agentModelName=gpt-5.5", "agentModelVersion=2026-04-24",
+                             "enableMethodologySearch=false", "enableScheduledAnalysis=false"):
+                self.assertIn(expected, arguments)
+
+    def test_retry_classifier_identifies_not_ready_resources_without_retrying_other_failures(self):
+        result = self.invoke_powershell(
+            """
+            $ErrorActionPreference = 'Stop'
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+                $env:FUNCTION_SCRIPT, [ref]$null, [ref]$null)
+            $function = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'Test-FunctionDeploymentNotReady'
+            }, $true)
+            . ([scriptblock]::Create($function.Extent.Text))
+            @(
+                (Test-FunctionDeploymentNotReady -Output 'ResourceNotFound')
+                (Test-FunctionDeploymentNotReady -Output 'Microsoft.Web/sites/example was not found')
+                (Test-FunctionDeploymentNotReady -Output 'AuthorizationFailed')
+                (Test-FunctionDeploymentNotReady -Output 'Package build failed')
+                (Test-FunctionDeploymentNotReady -Output '')
+            ) | ConvertTo-Json -Compress
+            """,
+            FUNCTION_SCRIPT=str(FUNCTION_SCRIPT),
+        )
+        self.assertEqual([True, True, False, False, False], json.loads(result))
+
+    def test_search_resource_recovery_selects_the_exact_region_specific_service(self):
+        result = self.invoke_powershell(
+            """
+            $ErrorActionPreference = 'Stop'
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+                $env:FUNCTION_SCRIPT, [ref]$null, [ref]$null)
+            $function = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'Get-DeploymentResourceName'
+            }, $true)
+            . ([scriptblock]::Create($function.Extent.Text))
+            function az {
+                $queryIndex = [array]::IndexOf($args, '--query')
+                $script:Query = $args[$queryIndex + 1]
+                'srch-synthetic-centralus'
+            }
+            $null = Get-DeploymentResourceName -ResourceGroupName 'synthetic' `
+                -ResourceType 'Microsoft.Search/searchServices' -NamePrefix 'srch-synthetic-centralus' -ExactMatch
+            $script:Query
+            """,
+            FUNCTION_SCRIPT=str(FUNCTION_SCRIPT),
+        )
+        self.assertEqual("[?name=='srch-synthetic-centralus'].name | [0]", result)
+
+    def test_merged_premium_default_is_consistent_and_still_supports_basic(self):
+        template = (REPO_ROOT / "dotnet_frontend" / "infra" / "main.bicep").read_text(encoding="utf-8-sig")
+        parameters = (REPO_ROOT / "dotnet_frontend" / "infra" / "main.bicepparam").read_text(encoding="utf-8-sig")
+        script = (REPO_ROOT / "deploy.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("param appServicePlanSku string = 'P0v3'", template)
+        self.assertIn("param appServicePlanSku = 'P0v3'", parameters)
+        self.assertIn('[string]$FrontendSku = "P0v3"', script)
+        self.assertIn("@allowed([ 'B1'", template)
 
     def test_storage_preflight_never_reopens_policy_restricted_networks(self):
         output = self.invoke_powershell(

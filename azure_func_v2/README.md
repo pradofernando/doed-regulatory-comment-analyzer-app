@@ -62,9 +62,23 @@ cd azure_func_v2\infra
 
 # Optional: request Elastic Premium instead of the default Flex Consumption plan
 .\deploy.ps1 -RegulationsGovApiKey "your-api-key" -DocumentId "YOUR_DOCUMENT_ID" -UsePremium
+
+# Optional: deploy Azure AI Search in a region independent of the Function stack
+.\deploy.ps1 -RegulationsGovApiKey "your-api-key" -DocumentId "YOUR_DOCUMENT_ID" -EnableMethodologySearch -SearchLocation centralus
+
+# Optional: use regional Standard embedding quota when GlobalStandard quota is unavailable
+.\deploy.ps1 -RegulationsGovApiKey "your-api-key" -DocumentId "YOUR_DOCUMENT_ID" -EnableMethodologySearch -EmbeddingSkuName Standard
 ```
 
 For a brand-new deployment into a new or empty resource group, the script generates a fresh stack suffix for globally unique resources. For incremental redeploys into an existing live stack, it reuses the existing suffix automatically.
+
+`-SearchLocation` defaults to the Function `-Location`. When the two regions differ, the template appends the normalized Search region to the service name and creates a side-by-side service; it does not move or delete an existing Search service. Recreate indexes and update Foundry Search connections before retiring the old service.
+
+`-EmbeddingSkuName` accepts `GlobalStandard`, `Standard`, or `DataZoneStandard` and defaults to `GlobalStandard`. The selected SKU must have at least `-EmbeddingCapacity` quota available in the Function region.
+
+These options configure the optional services only; `-EnableMethodologySearch`
+must also be supplied to provision Search and embeddings. GPT-5.5 remains the
+independent, explicitly pinned model for the four agents.
 
 The script handles everything:
 - Provisions all Azure resources via Bicep

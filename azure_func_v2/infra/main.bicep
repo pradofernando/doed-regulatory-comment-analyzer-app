@@ -46,6 +46,7 @@ param baseName string = 'doed-comments'
   'westus'
   'westus2'
   'westus3'
+  'centralus'
   'northcentralus'
   'southcentralus'
   'swedencentral'
@@ -54,6 +55,9 @@ param baseName string = 'doed-comments'
   'australiaeast'
 ])
 param location string = 'eastus'  // <-- CHANGE THIS TO DEPLOY TO A DIFFERENT REGION
+
+@description('Azure region for AI Search. Defaults to the Function stack region. A different region creates a region-suffixed Search service for side-by-side migration.')
+param searchLocation string = location
 
 @description('Selected model deployment capacity in thousands of tokens per minute.')
 @minValue(1)
@@ -75,6 +79,14 @@ param embeddingCapacity int = 10
 
 @description('Provision optional methodology Search and embeddings. Leave disabled until a knowledge index is needed.')
 param enableMethodologySearch bool = false
+
+@description('Deployment SKU for text-embedding-3-large. Use Standard or DataZoneStandard when GlobalStandard quota is unavailable.')
+@allowed([
+  'GlobalStandard'
+  'Standard'
+  'DataZoneStandard'
+])
+param embeddingSkuName string = 'GlobalStandard'
 
 @description('The Regulations.gov API key. Get one free at https://open.gsa.gov/api/regulationsgov/')
 @secure()
@@ -155,7 +167,10 @@ var appInsightsName = 'appi-${baseName}'
 var logAnalyticsName = 'law-${baseName}'
 var aiFoundryName = 'aif-${baseName}-${uniqueSuffix}'
 var documentIntelligenceName = 'docint-${baseName}-${uniqueSuffix}'
-var searchServiceName = 'srch-${baseName}-${uniqueSuffix}'
+var normalizedLocation = toLower(replace(location, ' ', ''))
+var normalizedSearchLocation = toLower(replace(searchLocation, ' ', ''))
+var searchLocationNamePart = normalizedSearchLocation == normalizedLocation ? '' : '-${normalizedSearchLocation}'
+var searchServiceName = 'srch-${baseName}-${uniqueSuffix}${searchLocationNamePart}'
 var aiProjectName = 'aiproj-${baseName}'
 var foundryProjectEndpoint = 'https://${aiFoundryName}.cognitiveservices.azure.com/api/projects/${aiProjectName}'
 var usePremiumHosting = hostingMode == 'Premium'
@@ -378,7 +393,7 @@ resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2023-10-01-p
 #disable-next-line BCP334
 resource searchService 'Microsoft.Search/searchServices@2022-09-01' = if (enableMethodologySearch) {
   name: searchServiceName
-  location: location
+  location: searchLocation
   tags: tags
 
   identity: {
@@ -473,7 +488,7 @@ resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployme
   ]
 
   sku: {
-    name: 'GlobalStandard'
+    name: embeddingSkuName
     capacity: embeddingCapacity
   }
 

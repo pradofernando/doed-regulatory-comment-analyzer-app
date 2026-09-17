@@ -11,8 +11,10 @@ all four instruction sets from [`AGENT_PROMPTS.md`](../azure_func_v2/AGENT_PROMP
 
 ## Current full-stack readiness
 
-The personal target confirmed on 2026-09-16 is GPT-5.5/Functions in East US and
-the B1 web app/Cosmos in Central US. GPT-5.5 `2026-04-24`, GlobalStandard, is
+The personal target uses GPT-5.5/Functions in East US and the web app/Cosmos in
+Central US. On 2026-09-17 the default web tier was changed, with user approval,
+from B1 to Premium P0v3. The earlier B1 cost and regional preflight results are
+historical and must not be treated as verification of the new tier. GPT-5.5 `2026-04-24`, GlobalStandard, is
 explicitly pinned; no model downgrade is allowed. Automatic daily AI analysis
 and methodology Search/embeddings remain disabled unless explicitly enabled.
 The web app's hourly watchlist checks are separate; automatic AI analysis is a
@@ -42,8 +44,9 @@ The validation-only plan and proof are retained locally in
 - Runtime Function dependencies remain in the Function
   [`requirements.txt`](../azure_func_v2/doed_regulatory_comments_func/requirements.txt).
   Avoid mixing this environment with the root legacy Semantic Kernel pipeline.
-- The Flex ZIP packager includes only the seven required runtime files and uses
-  PowerShell `Compress-Archive` for an actual ZIP on Windows and Linux.
+- Both Function hosting paths publish a ZIP through Azure CLI remote build. The
+  packager retains the seven-file runtime allowlist and uses .NET ZIP compression
+  on Windows and Linux; it does not require `tar` or install Core Tools during deployment.
 - The frontend package excludes all local data/settings, build directories, IaC,
   azd state and development configuration. The favicon and runtime static assets
   remain included.
@@ -73,7 +76,7 @@ The App Service uses a system-assigned managed identity for Azure service access
 
 | Resource | Purpose |
 | --- | --- |
-| Linux App Service plan | Hosts the web application. The default SKU is `B1`. |
+| Linux App Service plan | Hosts the web application. The default SKU is `P0v3`. |
 | Linux App Service | Runs the .NET 9 Blazor Server application. |
 | System-assigned managed identity | Authenticates the app to Azure services without application secrets. |
 | Key Vault | Stores the Regulations.gov API key and Foundry project endpoint. |
@@ -326,7 +329,7 @@ These Bicep settings are currently edited in `main.bicepparam` rather than set t
 | Parameter | Default | Notes |
 | --- | ---: | --- |
 | `baseName` | `doedweb` | Resource-name prefix; 3-15 characters. |
-| `appServicePlanSku` | `B1` | Allowed B/Pv3 SKUs are enforced by Bicep. |
+| `appServicePlanSku` | `P0v3` | Allowed B/Pv3 SKUs are enforced by Bicep. |
 | `defaultDocumentId` | `ED-2025-SCC-0481-0001` | UI default. |
 | `batchSize` | `5` | Grouping batch size, 1-20. |
 | `payloadOffloadThresholdBytes` | `524288` | Cosmos raw-payload offload threshold. |
@@ -353,7 +356,7 @@ Operational requirements:
 - Keep App Service at one instance.
 - Back up `/home/data/analysis.db` before risky upgrades.
 - Use Azure SQL or Cosmos before enabling horizontal scale-out.
-- B1 does not enable Always On in this template; use a supported higher SKU if cold starts are unacceptable.
+- The default P0v3 plan enables Always On. Keep it enabled for production readiness.
 
 ### Profile B: existing Azure SQL
 
@@ -749,7 +752,7 @@ Back up the account or use continuous backup before a production migration.
 3. Run `azd deploy web`.
 4. Verify `/health/live`, `/health/ready`, and a read-only Library operation.
 
-The default B1 deployment does not create a deployment slot. If zero-downtime rollback is required, use a tier that supports slots and add slot resources before production rollout.
+The default P0v3 deployment does not create a deployment slot automatically. Add slot resources before production rollout if zero-downtime deployment and rollback are required.
 
 ### Infrastructure rollback
 

@@ -116,6 +116,11 @@ Open <https://localhost:7018>. (If your browser complains about the dev certific
 
 Results land on the **Analysis** page. Start with **Coverage and quality**, open source evidence, and use **Review and search** to inspect or correct classifications. Reports can then be downloaded, reopened from **Library**, or compared with another saved run.
 
+For a Function-managed deployment, **Settings** exposes only the default
+document/docket, batch size, and validation preference. Credentials, agent
+versions, endpoints, and model selection remain deployment-managed. The direct
+connection controls above are still available in standalone/local mode.
+
 ---
 
 ## Set up your Foundry agents
@@ -174,6 +179,29 @@ The root deployment orchestrates Function v2 and the frontend. It now defaults t
 ```powershell
 .\deploy.ps1 `
 	-RegulationsGovApiKey $env:REGS_API_KEY
+```
+
+When optional methodology Search is enabled, it defaults to the Function region.
+Use `-SearchLocation` to place it independently; a different region creates a
+region-suffixed service so the existing service remains available during index
+and connection migration. Neither this option nor the embedding SKU enables
+Search automatically:
+
+```powershell
+.\deploy.ps1 `
+    -RegulationsGovApiKey $env:REGS_API_KEY `
+    -EnableMethodologySearch `
+    -SearchLocation centralus
+```
+
+If `GlobalStandard` quota for `text-embedding-3-large` is exhausted, select a SKU with available quota in the Function region. For example, use East US regional Standard capacity:
+
+```powershell
+.\deploy.ps1 `
+    -RegulationsGovApiKey $env:REGS_API_KEY `
+    -Location eastus `
+    -EnableMethodologySearch `
+    -EmbeddingSkuName Standard
 ```
 
 To retain existing Cosmos results, pass the existing endpoint and account name. Add `-CosmosResourceGroupName` when it is not the frontend resource group:

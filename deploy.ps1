@@ -27,6 +27,9 @@ param(
     [string]$FrontendLocation = "",
 
     [Parameter(Mandatory=$false)]
+    [string]$SearchLocation = "",
+
+    [Parameter(Mandatory=$false)]
     [string]$RegulationsGovApiKey = $env:REGS_API_KEY,
 
     [Parameter(Mandatory=$false)]
@@ -42,7 +45,7 @@ param(
     [string]$FrontendBaseName = "doedweb",
 
     [Parameter(Mandatory=$false)]
-    [string]$FrontendSku = "B1",
+    [string]$FrontendSku = "P0v3",
 
     [Parameter(Mandatory=$false)]
     [ValidateSet('Sqlite', 'AzureSql', 'Cosmos')]
@@ -124,6 +127,10 @@ param(
     [int]$EmbeddingCapacity = 10,
 
     [Parameter(Mandatory=$false)]
+    [ValidateSet('GlobalStandard', 'Standard', 'DataZoneStandard')]
+    [string]$EmbeddingSkuName = "GlobalStandard",
+
+    [Parameter(Mandatory=$false)]
     [string]$DeploymentSuffix = "",
 
     [Parameter(Mandatory=$false)]
@@ -167,6 +174,9 @@ if ([string]::IsNullOrWhiteSpace($FrontendResourceGroupName)) {
 if ([string]::IsNullOrWhiteSpace($FrontendLocation)) {
     $FrontendLocation = $Location
 }
+if ([string]::IsNullOrWhiteSpace($SearchLocation)) {
+    $SearchLocation = $Location
+}
 if ([string]::IsNullOrWhiteSpace($CosmosResourceGroupName)) {
     $CosmosResourceGroupName = $FrontendResourceGroupName
 }
@@ -205,8 +215,8 @@ if ($IncludeTags) {
 }
 
 $repoRoot = $PSScriptRoot
-$functionDeployScript = Join-Path $repoRoot "azure_func_v2\infra\deploy.ps1"
-$frontendBicep = Join-Path $repoRoot "dotnet_frontend\infra\main.bicep"
+$functionDeployScript = [System.IO.Path]::Combine($repoRoot, 'azure_func_v2', 'infra', 'deploy.ps1')
+$frontendBicep = [System.IO.Path]::Combine($repoRoot, 'dotnet_frontend', 'infra', 'main.bicep')
 $frontendProject = Join-Path $repoRoot "dotnet_frontend"
 
 function Assert-CommandAvailable {
@@ -332,6 +342,7 @@ Write-Host "Subscription:             $($account.name)" -ForegroundColor White
 Write-Host "Function resource group:  $ResourceGroupName" -ForegroundColor White
 Write-Host "Frontend resource group:  $FrontendResourceGroupName" -ForegroundColor White
 Write-Host "Function location:        $Location" -ForegroundColor White
+Write-Host "AI Search location:       $SearchLocation" -ForegroundColor White
 Write-Host "Frontend location:        $FrontendLocation" -ForegroundColor White
 Write-Host "Frontend persistence:     $PersistenceProvider" -ForegroundColor White
 Write-Host ""
@@ -345,7 +356,7 @@ if (-not $SkipFunctionDeployment) {
     Write-Host "Step 1/4: Deploying Azure Function v2 stack" -ForegroundColor Yellow
     Write-Host "============================================" -ForegroundColor Yellow
 
-    $agentDeploymentOutputPath = Join-Path $env:TEMP ("doed-agent-deployment-{0}.json" -f ([guid]::NewGuid().ToString('N')))
+    $agentDeploymentOutputPath = Join-Path ([System.IO.Path]::GetTempPath()) ("doed-agent-deployment-{0}.json" -f ([guid]::NewGuid().ToString('N')))
     $functionArgs = @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
@@ -353,6 +364,7 @@ if (-not $SkipFunctionDeployment) {
         '-ResourceGroupName', $ResourceGroupName,
         '-BaseName', $FunctionBaseName,
         '-Location', $Location,
+        '-SearchLocation', $SearchLocation,
         '-RegulationsGovApiKey', $RegulationsGovApiKey,
         '-DocumentId', $DocumentId,
         '-BatchSize', [string]$BatchSize,
@@ -361,6 +373,7 @@ if (-not $SkipFunctionDeployment) {
         '-AgentModelVersion', $AgentModelVersion,
         '-AgentModelSku', $AgentModelSku,
         '-EmbeddingCapacity', [string]$EmbeddingCapacity,
+        '-EmbeddingSkuName', $EmbeddingSkuName,
         '-AgentDeploymentOutputPath', $agentDeploymentOutputPath
     )
 
@@ -777,7 +790,8 @@ if (-not $SkipFrontendPublish) {
         if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
         }
-        Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($publishDir, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 
         Invoke-NativeChecked -Command 'az' -Arguments @(
             'webapp', 'deploy',
