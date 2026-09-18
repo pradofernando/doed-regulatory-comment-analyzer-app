@@ -186,9 +186,15 @@ def build_failed_analysis_document(
     completed_at: str,
     error_message: str,
 ) -> Dict[str, Any]:
+    requested_comment_ids = request.get("commentIds", [])
+    requested_count = (
+        len(requested_comment_ids)
+        if requested_comment_ids
+        else request.get("maxComments") or 0
+    )
     document = build_analysis_document(
         request,
-        {"totalComments": 0, "categorizations": [], "groupedAnalysis": {}},
+        {"totalComments": requested_count, "categorizations": [], "groupedAnalysis": {}},
         started_at=started_at,
         completed_at=completed_at,
     )
@@ -328,7 +334,7 @@ class CosmosRunStore:
                     {"op": "replace", "path": "/completedAt", "value": None},
                     {"op": "replace", "path": "/errorMessage", "value": None},
                 ],
-                filter_predicate="FROM c WHERE c.status = 'queued' OR c.status = 'failed'",
+                filter_predicate="FROM c WHERE c.status = 'queued'",
             )
             return True
         except CosmosHttpResponseError as error:

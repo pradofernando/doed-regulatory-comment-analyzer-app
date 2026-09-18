@@ -4,8 +4,8 @@
 #
 # This script deploys all Azure resources required for the regulatory
 # comments processing Azure Function.
-# Flex Consumption is the default hosting plan. Use -UsePremium to opt into
-# Elastic Premium; the script will still fall back to Flex if Premium validation fails.
+# Flex Consumption is the default hosting plan. Use -UsePremium to require
+# Elastic Premium; Premium validation failures stop before resource creation.
 #
 # Prerequisites:
 # - Azure CLI installed (az --version)
@@ -1210,27 +1210,10 @@ if ($validationAttempt.ExitCode -ne 0) {
 
     if ($hostingMode -eq 'Premium') {
         Write-Host ""
-        Write-Host "Premium hosting validation failed. Falling back to Flex Consumption..." -ForegroundColor Yellow
-        $hostingMode = 'FlexConsumption'
-        $validationAttempt = Test-InfrastructureDeployment `
-            -ResourceGroupName $ResourceGroupName `
-            -TemplateFile $templateFile `
-            -Location $Location `
-            -SearchLocation $SearchLocation `
-            -GptCapacity $GptCapacity `
-            -EmbeddingCapacity $EmbeddingCapacity `
-            -EmbeddingSkuName $EmbeddingSkuName `
-            -RegulationsGovApiKey $RegulationsGovApiKey `
-            -DocumentId $DocumentId `
-            -BatchSize $BatchSize `
-            -DeployerPrincipalId $deployerPrincipalId `
-            -DeployerPrincipalType $deployerPrincipalType `
-            -BaseName $BaseName `
-            -DeploymentSuffix $DeploymentSuffix `
-            -HostingMode $hostingMode `
-            -DeploymentTagName $(if ($IncludeTags) { $DeploymentTagName } else { "" }) `
-            -DeploymentTagValue $(if ($IncludeTags) { $DeploymentTagValue } else { "" }) `
-            -ExistingFunctionStorageAccountName $ExistingFunctionStorageAccountName
+        Write-Host "Premium hosting validation failed. No resources were changed." -ForegroundColor Red
+        Write-Host "Premium validation output:" -ForegroundColor Yellow
+        Write-Host $premiumValidationOutput
+        exit 1
     }
 
     Write-Host "" 

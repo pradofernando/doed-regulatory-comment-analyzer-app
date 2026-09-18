@@ -812,6 +812,18 @@ async def validate_grouped_analysis_with_agent(
             logging.warning("Validator output missing expected status or collective_analysis; preserving grouped analysis")
             return grouped_analysis
 
+        try:
+            validated_analysis = validate_and_normalize_grouped_analysis(
+                validated_analysis,
+                len(categorizations),
+            )
+        except ValueError as validation_error:
+            logging.warning(
+                "Validator agent returned invalid grouped analysis; preserving the pre-validation result: %s",
+                validation_error,
+            )
+            return grouped_analysis
+
         logging.info("Validator agent returned status=%s", status)
         return validated_analysis
 
@@ -1420,10 +1432,12 @@ async def process_analysis_run(request_message: func.QueueMessage) -> None:
         )
         return
     logging.info(
-        "Starting %s analysis run %s for document %s.",
+        "Starting %s analysis run %s for document %s with %d requested comment ID(s) and maxComments=%s.",
         request["triggerSource"],
         request["runId"],
         request["documentId"],
+        len(request.get("commentIds", [])),
+        request.get("maxComments"),
     )
     try:
         result = await execute_analysis_request(request)
@@ -1435,14 +1449,19 @@ async def process_analysis_run(request_message: func.QueueMessage) -> None:
                 completed_at=utc_now(),
             ))
     except Exception as error:
-        if run_store is not None:
-            run_store.save_analysis(build_failed_analysis_document(
-                request,
-                started_at=started_at,
-                completed_at=utc_now(),
-                error_message=str(error),
-            ))
-        raise
+        if run_store is None:
+            raise
+
+        run_store.save_analysis(build_failed_analysis_document(
+            request,
+            started_at=started_at,
+            completed_at=utc_now(),
+            error_message=str(error),
+        ))
+        logging.exception(
+            "Analysis run %s failed and was recorded as terminal; acknowledging the queue message.",
+            request["runId"],
+        )
 
 
 async def execute_analysis_request(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -1531,7 +1550,10 @@ async def execute_analysis_request(request: Dict[str, Any]) -> Dict[str, Any]:
                     f"Could not find {len(missing_ids)} requested comment(s) for document {document_id}."
                 )
         
-        logging.info(f"Fetched {len(comments)} comments")
+        logging.info(
+            "Processing %d comment(s) after applying request filters.",
+            len(comments),
+        )
         
         # Save raw comments
         raw_comments_json = json.dumps(comments, indent=2)
