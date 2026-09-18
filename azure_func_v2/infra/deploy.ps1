@@ -1651,7 +1651,7 @@ Invoke-AgentCreationWorkflow `
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "All done! Your app is fully deployed." -ForegroundColor Cyan
-Write-Host "The function runs daily at 3AM EST (8AM UTC)." -ForegroundColor Cyan
+Write-Host "Analysis runs are started manually from the frontend." -ForegroundColor Cyan
 Write-Host "Monitor it at: https://portal.azure.com" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 exit 0
