@@ -1,6 +1,6 @@
 # DoED Regulatory Comments Azure Function
 
-Automated Azure Function that runs daily at 3AM EST to fetch, process, and analyze public comments from Regulations.gov.
+Azure Function workflow that processes and analyzes public comments selected in the web UI.
 
 ## Overview
 
@@ -13,9 +13,9 @@ This Azure Function automates the complete workflow:
 5. **Group Analysis** - Analyzes and groups similar comments with AI Agent
 6. **Store Results** - Saves frontend-compatible run records to Cosmos DB and large/raw artifacts to Blob Storage
 
-Scheduled and manual requests use the same `analysis-requests` queue worker. The Function exposes Function-key-protected endpoints:
+Manual requests use the `analysis-requests` queue worker. The Function exposes Function-key-protected endpoints:
 
-- `POST /api/analysis-runs` validates settings, creates a queued run, and returns `202 Accepted` with a `runId`.
+- `POST /api/analysis-runs` requires explicit `commentIds`, validates settings, creates a queued run, and returns `202 Accepted` with a `runId`.
 - `GET /api/analysis-runs/{runId}` returns `queued`, `running`, `succeeded`, or `failed` status.
 
 The queue worker atomically claims a run before execution, preventing duplicate queue deliveries from running concurrently. Categorization payloads above 512 KB are gzip-compressed into the private `analysis-run-payloads` container using the same format consumed by the frontend.
@@ -75,11 +75,9 @@ If your tenant disables key-based auth, the Foundry project endpoint is required
 
 For full step-by-step instructions see the [root README deployment guide](../README.md#deploying-to-azure).
 
-## Schedule
+## Execution
 
-- **Trigger**: Timer Trigger (CRON: `0 0 8 * * *`)
-- **Schedule**: Daily at 3AM EST (8AM UTC)
-- **Execution**: Automatic, no manual intervention required
+Analysis is started manually from the web UI. The HTTP endpoint rejects requests that do not contain at least one explicit comment ID.
 
 ## Infrastructure
 
@@ -221,8 +219,8 @@ pip install -r requirements.txt
 func start --verbose
 
 # The function will show:
-# - HTTP endpoint for manual triggering (if needed)
-# - Next scheduled run time
+# - HTTP endpoints for manual analysis
+# - Queue-triggered worker
 # - Logs in real-time
 ```
 
@@ -433,7 +431,7 @@ cd azure_func_v2\infra
 ### View Logs
 
 **Azure Portal:**
-1. Go to Function App → Functions → regulatory_comments_daily
+1. Go to Function App → Functions → process_analysis_run
 2. Click "Monitor" tab
 3. View execution history, logs, and metrics
 

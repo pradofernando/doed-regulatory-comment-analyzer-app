@@ -1189,6 +1189,14 @@ def _get_cosmos_run_store() -> Optional[CosmosRunStore]:
     return _cosmos_run_store
 
 
+def _request_json_object(req: func.HttpRequest) -> Dict[str, Any]:
+    body = req.get_body()
+    payload = json.loads(body) if body else {}
+    if not isinstance(payload, dict):
+        raise ValueError("The request body must be a JSON object.")
+    return payload
+
+
 @app.route(route="analysis-runs", methods=["POST"], auth_level=func.AuthLevel.FUNCTION)
 @app.queue_output(
     arg_name="request_message",
@@ -1197,9 +1205,17 @@ def _get_cosmos_run_store() -> Optional[CosmosRunStore]:
 )
 def submit_analysis_run(req: func.HttpRequest, request_message: func.Out[str]) -> func.HttpResponse:
     try:
-        payload = req.get_json() if req.get_body() else {}
-        if not isinstance(payload, dict):
-            raise AnalysisRequestValidationError("The request body must be a JSON object.")
+        payload = _request_json_object(req)
+        comment_ids = payload.get("commentIds")
+        logging.info(
+            "Received manual analysis request with fields %s and %d comment ID(s).",
+            sorted(str(key) for key in payload),
+            len(comment_ids) if isinstance(comment_ids, list) else 0,
+        )
+        if not comment_ids:
+            raise AnalysisRequestValidationError(
+                "commentIds must contain at least one comment ID for manual analysis."
+            )
         request = _create_request(payload, "manual")
     except (AnalysisRequestValidationError, ValueError) as error:
         return func.HttpResponse(
@@ -1295,10 +1311,7 @@ def _get_followup_agent_settings(payload: Dict[str, Any]) -> Tuple[str, Optional
 
 
 def _followup_payload(req: func.HttpRequest) -> Dict[str, Any]:
-    payload = req.get_json() if req.get_body() else {}
-    if not isinstance(payload, dict):
-        raise ValueError("The request body must be a JSON object.")
-    return payload
+    return _request_json_object(req)
 
 
 def _format_followup_prompt(payload: Dict[str, Any]) -> str:
@@ -1391,29 +1404,6 @@ async def ask_followup(req: func.HttpRequest) -> func.HttpResponse:
         }),
         mimetype="application/json",
     )
-
-
-@app.schedule(
-    schedule="0 0 8 * * *",
-    arg_name="myTimer",
-    run_on_startup=False,
-    use_monitor=False,
-)
-@app.queue_output(
-    arg_name="request_message",
-    queue_name=_ANALYSIS_QUEUE_NAME,
-    connection="AzureWebJobsStorage",
-)
-def regulatory_comments_daily(myTimer: func.TimerRequest, request_message: func.Out[str]) -> None:
-    if myTimer.past_due:
-        logging.info("The timer is past due.")
-
-    request = _create_request({}, "scheduled")
-    run_store = _get_cosmos_run_store()
-    if run_store is not None:
-        run_store.save_job(build_job_document(request, "queued"))
-    request_message.set(json.dumps(request))
-    logging.info("Queued scheduled analysis run %s.", request["runId"])
 
 
 @app.queue_trigger(

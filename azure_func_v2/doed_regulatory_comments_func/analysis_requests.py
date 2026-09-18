@@ -63,6 +63,10 @@ def create_analysis_request(
     if any(not isinstance(comment_id, str) or not comment_id.strip() for comment_id in comment_ids):
         raise AnalysisRequestValidationError("Every commentIds value must be a non-empty string.")
     normalized_comment_ids = list(dict.fromkeys(comment_id.strip() for comment_id in comment_ids))
+    if trigger_source == "manual" and not normalized_comment_ids:
+        raise AnalysisRequestValidationError(
+            "commentIds must contain at least one comment ID for manual analysis."
+        )
 
     requested_models = payload.get("models", {})
     if not isinstance(requested_models, Mapping):

@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
@@ -20,16 +21,19 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
     private readonly HttpClient _client;
     private readonly IAnalysisRepository _repository;
     private readonly FunctionAnalysisOptions _options;
+    private readonly ILogger<FunctionAnalysisRunner> _logger;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public FunctionAnalysisRunner(
         HttpClient client,
         IAnalysisRepository repository,
-        IOptions<FunctionAnalysisOptions> options)
+        IOptions<FunctionAnalysisOptions> options,
+        ILogger<FunctionAnalysisRunner> logger)
     {
         _client = client;
         _repository = repository;
         _options = options.Value;
+        _logger = logger;
     }
 
     public async Task<AnalysisRun> RunAsync(
@@ -42,6 +46,20 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
         if (comments.Count == 0)
             throw new InvalidOperationException("No comments were selected for analysis.");
 
+        var commentIds = comments
+            .Select(comment => comment.Id?.Trim())
+            .Where(commentId => !string.IsNullOrWhiteSpace(commentId))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (commentIds.Length != comments.Count)
+            throw new InvalidOperationException("Every selected comment must have a unique, non-empty comment ID.");
+
+        _logger.LogInformation(
+            "Submitting manual analysis for document {DocumentId} with {CommentIdCount} explicit comment ID(s).",
+            documentId,
+            commentIds.Length);
+
         progress?.Report(new AnalysisProgress
         {
             Phase = "Submitting",
@@ -52,10 +70,10 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
 
         using var submitRequest = new HttpRequestMessage(HttpMethod.Post, "api/analysis-runs")
         {
-            Content = JsonContent.Create(new
+            Content = CreateJsonContent(new
             {
                 documentId,
-                commentIds = comments.Select(comment => comment.Id).ToArray(),
+                commentIds,
                 maxComments = comments.Count,
                 batchSize = settings.BatchSize,
                 models = new
@@ -141,13 +159,13 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "api/followup/start")
         {
-            Content = JsonContent.Create(new
+            Content = CreateJsonContent(new
             {
                 analysisContext = FoundryAnalysisService.BuildFollowUpPriming(run, includeAcknowledgement: false),
                 agentName = settings.FollowUpAgentName,
                 agentVersion = settings.FollowUpAgentVersion,
                 agentModel = settings.ModelDeploymentName,
-            }, options: JsonOptions),
+            }),
         };
         AddFunctionKey(request);
 
@@ -179,7 +197,7 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "api/followup/ask")
         {
-            Content = JsonContent.Create(new
+            Content = CreateJsonContent(new
             {
                 conversationId = run.FollowUpThreadId,
                 analysisContext = FoundryAnalysisService.BuildFollowUpPriming(run, includeAcknowledgement: false),
@@ -193,7 +211,7 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
                 agentName = settings.FollowUpAgentName,
                 agentVersion = settings.FollowUpAgentVersion,
                 agentModel = settings.ModelDeploymentName,
-            }, options: JsonOptions),
+            }),
         };
         AddFunctionKey(request);
 
@@ -213,6 +231,17 @@ public sealed class FunctionAnalysisRunner : IAnalysisRunner, IFollowUpChatServi
         run.FollowUpHistory.Add(new FollowUpTurn("user", question.Trim(), DateTimeOffset.UtcNow));
         run.FollowUpHistory.Add(new FollowUpTurn("agent", answer.Answer, DateTimeOffset.UtcNow));
         return answer.Answer;
+    }
+
+    private static HttpContent CreateJsonContent<T>(T payload)
+    {
+        // Elastic Premium does not bind chunked HTTP request bodies to Python functions.
+        var content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions));
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json")
+        {
+            CharSet = "utf-8",
+        };
+        return content;
     }
 
     private sealed record RunSubmission(Guid RunId, string Status);

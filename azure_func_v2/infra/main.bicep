@@ -116,7 +116,7 @@ param restoreFoundry bool = false
 ])
 param hostingMode string = 'FlexConsumption'
 
-@description('Existing Cosmos DB account name in this resource group, shared with the frontend. Leave empty to keep Blob-only scheduled processing and disable manual runs.')
+@description('Existing Cosmos DB account name in this resource group, shared with the frontend. Required for manual analysis runs initiated by the UI.')
 param cosmosAccountName string = ''
 
 @description('Cosmos DB database containing analysis runs.')

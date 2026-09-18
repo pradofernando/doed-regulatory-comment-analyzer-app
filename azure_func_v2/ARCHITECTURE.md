@@ -5,11 +5,11 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         AZURE FUNCTION                               │
-│                   (Runs Daily at 3AM EST)                           │
+│                 (Runs on explicit UI requests)                      │
 └─────────────────────────────────────────────────────────────────────┘
                                  │
-                                 │ Timer Trigger
-                                 │ (CRON: 0 0 8 * * *)
+                                 │ HTTP POST with selected comment IDs
+                                 │ Queue-triggered worker
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          WORKFLOW PHASES                             │
@@ -220,34 +220,23 @@ Grouped Analysis JSON ──────> Azure Blob Storage
 └──────────────────┘    └────────────────────────┘
 ```
 
-## Timing & Schedule
+## Execution Flow
 
-```
-Daily Schedule (EST)
-
-00:00 (Midnight) ────────────────────────────
-        │
-02:00   │
-        │
-03:00   ├─► ⏰ FUNCTION TRIGGERS
-        │    │
-        │    ├─► Phase 1: Fetch Comments (2-3 min)
-        │    │
-        │    ├─► Phase 2: Extract & Consolidate (5-10 min)
-        │    │
-        │    ├─► Phase 3: AI Categorize (3-5 min)
-        │    │
-        │    └─► Phase 4: AI Group & Analyze (2-3 min)
-        │         │
-03:15   │         └─► ✅ COMPLETE
-        │
-04:00   │
-        │
-        ▼
+```text
+UI selection
+    |
+    +--> POST /api/analysis-runs with explicit commentIds
+    |
+    +--> Queue request
+    |
+    +--> Phase 1: Fetch selected comments
+    +--> Phase 2: Extract & Consolidate
+    +--> Phase 3: AI Categorize
+    +--> Phase 4: AI Group & Analyze
 ```
 
 **Total Processing Time**: ~10-20 minutes
-**Daily Run Time**: 3:00 AM EST (8:00 AM UTC)
+**Start Condition**: A user submits selected comments from the web UI
 
 ## File Outputs
 
@@ -382,7 +371,7 @@ Managed Identity Benefits:
 ✅ First run completes without errors
 ✅ All 4 phases execute in sequence
 ✅ Output files appear in blob storage
-✅ Daily schedule triggers at 3AM EST
+✅ Requests without explicit comment IDs are rejected
 ✅ Costs remain within budget
 ✅ Monitoring and alerts configured
 ```
